@@ -15,6 +15,30 @@ Or via Make:
 make build
 ```
 
+## Install
+
+After building, install the `claude-container` wrapper script to your system:
+
+```sh
+sudo make install
+```
+
+This installs to `/usr/local/bin/claude-container` by default. You can override the install location:
+
+```sh
+# Install to /usr/bin
+sudo make install PREFIX=/usr
+
+# Install to ~/.local/bin (no sudo needed)
+make install PREFIX=$HOME/.local
+```
+
+To uninstall:
+
+```sh
+sudo make uninstall
+```
+
 ## Bundle the image (tarball)
 
 ```sh

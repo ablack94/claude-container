@@ -5,5 +5,6 @@ image_name="${CLAUDE_CONTAINER_IMAGE:-claude-container:latest}"
 
 docker run --rm -it \
   -v "${HOME}/.claude:/home/node/.claude" \
+  -v "${HOME}/.claude.json:/home/node/.claude.json" \
   "${image_name}" \
   "$@"
