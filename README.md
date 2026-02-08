@@ -9,6 +9,12 @@ script and offline-friendly image packaging.
 docker build -t claude-container:latest .
 ```
 
+Or via Make:
+
+```sh
+make build
+```
+
 ## Bundle the image (tarball)
 
 ```sh
@@ -36,4 +42,10 @@ docker run --rm -it \
   -v "$HOME/.claude:/home/node/.claude" \
   claude-container:latest \
   --help
+```
+
+You can also use Make:
+
+```sh
+make run ARGS="--help"
 ```
