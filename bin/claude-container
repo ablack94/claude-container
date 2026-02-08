@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+image_name="${CLAUDE_CONTAINER_IMAGE:-claude-container:latest}"
+
+docker run --rm -it \
+  -v "${HOME}/.claude:/home/node/.claude" \
+  "${image_name}" \
+  "$@"
