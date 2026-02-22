@@ -1,75 +1,59 @@
 # claude-container
 
-Containerized wrapper for `@anthropic-ai/claude-code` with a lightweight CLI
-script and offline-friendly image packaging.
+Rust CLI tool that builds and runs Claude in any container image. Generates a
+Dockerfile on the fly, layers the Claude binary from
+`ghcr.io/ablack94/docker-claude:stable` onto your chosen base image, caches the
+result, and runs it with appropriate mounts. Supports both Docker and Podman.
 
 ## Build
 
 ```sh
-docker build -t claude-container:latest .
+cargo build --release
 ```
 
-Or via Make:
+The binary is at `target/release/claude-container`.
+
+## Usage
+
+### Run Claude in a container
 
 ```sh
-make build
+# Build (if needed) and launch — auto-detects docker/podman
+claude-container run ubuntu:24.04
+
+# Pass arguments to Claude
+claude-container run ubuntu:24.04 -- --help
+
+# Force rebuild
+claude-container run ubuntu:24.04 --rebuild
+
+# Explicit runtime
+claude-container --runtime podman run ubuntu:24.04
 ```
 
-## Install
-
-After building, install the `claude-container` wrapper script to your system:
+### Build image only
 
 ```sh
-sudo make install
+# Build and tag as claude-container:ubuntu-24.04
+claude-container build ubuntu:24.04
+
+# Custom tag
+claude-container build ubuntu:24.04 --tag my-claude:latest
+
+# Force rebuild
+claude-container build ubuntu:24.04 --rebuild
 ```
 
-This installs to `/usr/local/bin/claude-container` by default. You can override the install location:
+### Image caching
 
-```sh
-# Install to /usr/bin
-sudo make install PREFIX=/usr
+Built images are tagged as `claude-container:<sanitized-base>` where `/` and `:`
+are replaced with `-`. On `run`, if the tag already exists locally the build is
+skipped. Use `--rebuild` to force a fresh build.
 
-# Install to ~/.local/bin (no sudo needed)
-make install PREFIX=$HOME/.local
-```
+### Volume mounts (on `run`)
 
-To uninstall:
-
-```sh
-sudo make uninstall
-```
-
-## Bundle the image (tarball)
-
-```sh
-docker save -o claude-container.tar claude-container:latest
-```
-
-On another machine:
-
-```sh
-docker load -i claude-container.tar
-```
-
-## Run
-
-Use the wrapper script to ensure `~/.claude` is bind-mounted into the container:
-
-```sh
-./bin/claude-container --help
-```
-
-Or run directly:
-
-```sh
-docker run --rm -it \
-  -v "$HOME/.claude:/home/node/.claude" \
-  claude-container:latest \
-  --help
-```
-
-You can also use Make:
-
-```sh
-make run ARGS="--help"
-```
+| Host | Container |
+|------|-----------|
+| `~/.claude` | `/root/.claude` |
+| `~/.claude.json` | `/root/.claude.json` |
+| `$(pwd)` | `/workarea` (working dir) |
