@@ -1,0 +1,40 @@
+services:
+  gateway:
+    image: ubuntu/squid:latest
+    user: proxy
+    volumes:
+      - {{SQUID_CONF_PATH}}:/etc/squid/squid.conf:ro
+    networks:
+      - external
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/80'"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+
+  claude:
+    build: .
+    init: true
+    stdin_open: true
+    tty: true
+    working_dir: /workarea
+    environment:
+      - HTTP_PROXY=http://gateway
+      - HTTPS_PROXY=http://gateway
+      - http_proxy=http://gateway
+      - https_proxy=http://gateway
+{{ENV_FILE}}
+    networks:
+      - internal
+    depends_on:
+      gateway:
+        condition: service_healthy
+{{VOLUMES}}
+{{COMMAND}}
+networks:
+  external:
+    driver: bridge
+  internal:
+    driver: bridge
+    internal: true

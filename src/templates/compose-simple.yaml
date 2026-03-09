@@ -1,0 +1,10 @@
+services:
+  claude:
+    build: .
+    init: true
+    stdin_open: true
+    tty: true
+    working_dir: /workarea
+{{ENV_FILE}}
+{{VOLUMES}}
+{{COMMAND}}

@@ -2,8 +2,8 @@
 
 Rust CLI tool that builds and runs Claude in any container image. Generates a
 Dockerfile on the fly, layers the Claude binary from
-`ghcr.io/ablack94/docker-claude:stable` onto your chosen base image, caches the
-result, and runs it with appropriate mounts. Supports both Docker and Podman.
+`ghcr.io/ablack94/docker-claude:stable` onto your chosen base image, and runs
+it via Docker Compose. Supports both Docker and Podman.
 
 ## Build
 
@@ -17,44 +17,81 @@ The binary is at `target/release/claude-container`.
 
 ### Authentication
 
-Set up a long-lived API token. This runs `claude setup-token` under the hood,
-captures the token, and stores it at `~/.claude-container/token`. The token is
-automatically injected as `CLAUDE_API_KEY` on subsequent runs.
+Authentication is managed through named profiles stored at
+`~/.config/claude-container/profiles/<name>.env`. Each profile is a secure env
+file (mode 0600) referenced by the generated compose file — secrets are never
+inlined in `compose.yaml`.
+
+**Create an OAuth profile** (runs `claude setup-token` under the hood):
 
 ```sh
-claude-container auth
+claude-container auth create work
 ```
 
-### Run Claude in a container
+**Create an API key profile:**
 
 ```sh
-# Build (if needed) and launch — auto-detects docker/podman
-claude-container run ubuntu:24.04
-
-# Pass arguments to Claude
-claude-container run ubuntu:24.04 -- --help
-
-# Force rebuild
-claude-container run ubuntu:24.04 --rebuild
-
-# Explicit runtime
-claude-container --runtime podman run ubuntu:24.04
-
-# Forward host ~/.claude and ~/.claude.json into the container
-claude-container run ubuntu:24.04 --forward-settings
+claude-container auth create personal --api-key
 ```
 
-### Build image only
+**Set a default profile:**
 
 ```sh
-# Build and tag as claude-container:ubuntu-24.04
+claude-container auth default work
+```
+
+**List profiles:**
+
+```sh
+claude-container auth list
+```
+
+**Remove a profile:**
+
+```sh
+claude-container auth remove old-profile
+```
+
+If `ANTHROPIC_API_KEY` is set in the host environment, it is also passed through
+to the container regardless of which profile is active.
+
+When no `--profile` is specified on `build`, the default profile is used. If no
+default is set and no `ANTHROPIC_API_KEY` is in the environment, a warning is
+printed.
+
+### Build a project
+
+Generates a `.claude-container/` directory in the current working directory
+containing a `Dockerfile` and `compose.yaml`.
+
+```sh
+# Generate .claude-container/ project files
 claude-container build ubuntu:24.04
 
-# Custom tag
-claude-container build ubuntu:24.04 --tag my-claude:latest
+# Build and immediately run
+claude-container build ubuntu:24.04 --run
 
-# Force rebuild
-claude-container build ubuntu:24.04 --rebuild
+# Use a specific auth profile
+claude-container build ubuntu:24.04 --profile personal --run
+
+# Pass extra arguments to Claude
+claude-container build ubuntu:24.04 -- -p "hello"
+
+# Forward host ~/.claude and ~/.claude.json into the container
+claude-container build ubuntu:24.04 --forward-settings
+
+# Explicit runtime
+claude-container --runtime podman build ubuntu:24.04
+```
+
+### Run an existing project
+
+```sh
+# Run the .claude-container/ project in the current directory
+claude-container run
+
+# Force rebuild of the container image
+claude-container run --rebuild
 ```
 
 ### Network isolation
@@ -65,13 +102,10 @@ blocked. `*.anthropic.com` and `*.claude.com` are always allowed.
 
 ```sh
 # Isolated mode — only *.anthropic.com and *.claude.com are reachable
-claude-container run ubuntu:24.04 --isolated
+claude-container build ubuntu:24.04 --isolated --run
 
-# Allow additional hosts
-claude-container run ubuntu:24.04 --allow-host github.com --allow-host pypi.org
-
-# --allow-host implies --isolated
-claude-container run ubuntu:24.04 --allow-host npmjs.org
+# Allow additional hosts (implies --isolated)
+claude-container build ubuntu:24.04 --allow-host github.com --allow-host pypi.org --run
 ```
 
 Architecture:
@@ -82,48 +116,49 @@ Architecture:
 The claude container has no direct internet access. The squid proxy sits on both
 networks and only forwards requests to whitelisted hostnames.
 
-### Compose workflow
+### Runtime configuration
 
-Render and manage compose project files locally for debugging, customization,
-or manual execution. Files are written to `.claude-container/` by default.
+By default the CLI auto-detects Docker or Podman. You can set a default runtime
+and ban runtimes you don't want used:
 
 ```sh
-# Render compose files to ./.claude-container/
-claude-container compose render ubuntu:24.04
+# Set podman as the default
+claude-container config runtime podman
 
-# Allow additional hosts
-claude-container compose render ubuntu:24.04 --allow-host github.com
+# Ban docker entirely
+claude-container config ban docker
 
-# Run as a specific user inside the claude container
-claude-container compose render ubuntu:24.04 --user 1000:1000
+# Show current config
+claude-container config show
 
-# Forward host settings
-claude-container compose render ubuntu:24.04 --forward-settings
+# Remove a ban
+claude-container config ban docker --remove
 
-# Custom output directory
-claude-container compose render ubuntu:24.04 -o my-compose
-
-# Run a previously rendered compose project
-claude-container compose run
-
-# Run from a custom directory
-claude-container compose run -d my-compose
+# Clear the default (revert to auto-detect)
+claude-container config runtime --clear
 ```
 
-This writes `compose.yaml` and `squid.conf` to the output directory. You can
-inspect and edit these files before running. The `compose run` subcommand
-handles startup and teardown automatically.
+The `--runtime` flag on any command overrides the configured default, but banned
+runtimes are always rejected. Configuration is stored at
+`~/.config/claude-container/config`.
 
-### Image caching
+### The `-C` flag
 
-Built images are tagged as `claude-container:<sanitized-base>` where `/` and `:`
-are replaced with `-`. On `run`, if the tag already exists locally the build is
-skipped. Use `--rebuild` to force a fresh build.
+Works like `git -C` or `make -C` — changes the working directory before doing
+anything else. Both `build` and `run` then operate relative to that directory:
 
-### Volume mounts (on `run`)
+```sh
+# Build a project rooted at /path/to/project
+claude-container -C /path/to/project build ubuntu:24.04
+
+# Run an existing project in another directory
+claude-container -C /path/to/project run
+```
+
+### Volume mounts
 
 | Host | Container | When |
 |------|-----------|------|
 | `$(pwd)` | `/workarea` (working dir) | Always |
-| `~/.claude` | `/root/.claude` | `--forward-settings` |
-| `~/.claude.json` | `/root/.claude.json` | `--forward-settings` |
+| `~/.claude` | `/home/claude/.claude` | `--forward-settings` |
+| `~/.claude.json` | `/home/claude/.claude.json` | `--forward-settings` |
