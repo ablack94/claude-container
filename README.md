@@ -22,16 +22,16 @@ Authentication is managed through named profiles stored at
 file (mode 0600) referenced by the generated compose file — secrets are never
 inlined in `compose.yaml`.
 
-**Create an OAuth profile** (runs `claude setup-token` under the hood):
+**Create an OAuth profile:**
 
 ```sh
-claude-container auth create work
+claude-container auth create work oauth <token>
 ```
 
 **Create an API key profile:**
 
 ```sh
-claude-container auth create personal --api-key
+claude-container auth create personal api-key <key>
 ```
 
 **Set a default profile:**

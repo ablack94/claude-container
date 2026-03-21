@@ -1,8 +1,6 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
 
 /// Return the path to ~/.config/claude-container/.
 pub fn config_dir() -> Result<PathBuf, String> {
@@ -171,145 +169,23 @@ pub fn write_host_api_key_env(key: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Extract an OAuth token (sk-ant-...) from text.
-/// Tokens are alphanumeric with hyphens, underscores, and dots.
-fn extract_token(text: &str) -> Option<&str> {
-    let start = text.find("sk-ant-")?;
-    let token_text = &text[start..];
-    // Token consists of alphanumeric chars, hyphens, underscores
-    let end = token_text
-        .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
-        .unwrap_or(token_text.len());
-    let token = &token_text[..end];
-    if token.len() > 10 {
-        Some(token)
-    } else {
-        None
+/// Create an OAuth token profile.
+pub fn create_oauth_profile(name: &str, token: &str) -> Result<(), String> {
+    if token.is_empty() {
+        return Err("OAuth token cannot be empty".to_string());
     }
-}
-
-/// Scan a stream for URLs and tokens, updating shared state.
-fn scan_stream<R: std::io::Read>(
-    reader: R,
-    token: &Arc<Mutex<Option<String>>>,
-) {
-    let reader = BufReader::new(reader);
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
-        let trimmed = line.trim();
-
-        if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
-            eprintln!("Open this URL to authenticate:\n\n  {trimmed}\n");
-        }
-
-        if let Some(t) = extract_token(trimmed) {
-            *token.lock().unwrap() = Some(t.to_string());
-        }
-    }
-}
-
-/// Run `claude setup-token` and return the captured token.
-fn run_setup_token() -> Result<String, String> {
-    eprintln!("Starting authentication...\n");
-
-    let mut child = Command::new("claude")
-        .arg("setup-token")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to run `claude setup-token`: {e}"))?;
-
-    let token: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-
-    let stdout = child.stdout.take().unwrap();
-    let token_for_stdout = Arc::clone(&token);
-    let stdout_thread = std::thread::spawn(move || {
-        scan_stream(stdout, &token_for_stdout);
-    });
-
-    let stderr = child.stderr.take().unwrap();
-    let token_for_stderr = Arc::clone(&token);
-    let stderr_thread = std::thread::spawn(move || {
-        scan_stream(stderr, &token_for_stderr);
-    });
-
-    let status = child.wait().map_err(|e| format!("Failed to wait for process: {e}"))?;
-    let _ = stdout_thread.join();
-    let _ = stderr_thread.join();
-
-    if !status.success() {
-        return Err(format!("`claude setup-token` exited with code {:?}", status.code()));
-    }
-
-    let token = token.lock().unwrap().take();
-
-    match token {
-        Some(t) => Ok(t),
-        None => {
-            eprintln!("Could not detect token automatically.");
-            eprintln!("Paste your token (sk-...) and press Enter:");
-            let mut input = String::new();
-            std::io::stdin()
-                .read_line(&mut input)
-                .map_err(|e| format!("Failed to read token: {e}"))?;
-            let input = input.trim();
-            if !input.starts_with("sk-") {
-                return Err("Invalid token. Expected a value starting with `sk-`.".to_string());
-            }
-            Ok(input.to_string())
-        }
-    }
-}
-
-/// Create an OAuth profile by running `claude setup-token`.
-pub fn create_oauth_profile(name: &str) -> Result<(), String> {
-    let token = run_setup_token()?;
     let path = write_profile_env(name, &format!("CLAUDE_CODE_OAUTH_TOKEN={token}"))?;
     eprintln!("Profile '{name}' saved to {}", path.display());
     Ok(())
 }
 
-/// Create an API key profile by prompting for the key.
-pub fn create_api_key_profile(name: &str) -> Result<(), String> {
-    eprint!("Enter your API key: ");
-    std::io::stderr().flush().ok();
-
-    let mut input = String::new();
-    std::io::stdin()
-        .read_line(&mut input)
-        .map_err(|e| format!("Failed to read input: {e}"))?;
-    let key = input.trim();
-
+/// Create an API key profile.
+pub fn create_api_key_profile(name: &str, key: &str) -> Result<(), String> {
     if key.is_empty() {
         return Err("API key cannot be empty".to_string());
     }
-
     let path = write_profile_env(name, &format!("ANTHROPIC_API_KEY={key}"))?;
     eprintln!("Profile '{name}' saved to {}", path.display());
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_token_from_setup_output() {
-        // Actual format from `claude setup-token`
-        let line = "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                              Store this token securely. You won't be able to see it again.";
-        let token = extract_token(line).unwrap();
-        assert_eq!(token, "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");
-    }
-
-    #[test]
-    fn test_extract_token_standalone() {
-        let line = "sk-ant-oat01-abc123";
-        assert_eq!(extract_token(line).unwrap(), "sk-ant-oat01-abc123");
-    }
-
-    #[test]
-    fn test_extract_token_no_match() {
-        assert!(extract_token("no token here").is_none());
-    }
-}

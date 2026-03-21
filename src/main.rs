@@ -79,18 +79,13 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum AuthCommands {
-    /// Create a new auth profile (runs `claude setup-token` for OAuth)
+    /// Create a new auth profile
     Create {
         /// Profile name
         name: String,
 
-        /// Store an API key instead of an OAuth token
-        #[arg(long)]
-        api_key: bool,
-
-        /// Set this profile as the default
-        #[arg(long)]
-        default: bool,
+        #[command(subcommand)]
+        kind: AuthCreateKind,
     },
 
     /// List all auth profiles
@@ -106,6 +101,29 @@ enum AuthCommands {
     Remove {
         /// Profile name to remove
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthCreateKind {
+    /// Store an OAuth token (CLAUDE_CODE_OAUTH_TOKEN)
+    Oauth {
+        /// The OAuth token value
+        token: String,
+
+        /// Set this profile as the default
+        #[arg(long)]
+        default: bool,
+    },
+
+    /// Store an API key (ANTHROPIC_API_KEY)
+    ApiKey {
+        /// The API key value
+        key: String,
+
+        /// Set this profile as the default
+        #[arg(long)]
+        default: bool,
     },
 }
 
@@ -205,11 +223,14 @@ fn main() {
     match cli.command {
         Commands::Auth { command } => {
             let result = match command {
-                AuthCommands::Create { name, api_key, default } => {
-                    let result = if api_key {
-                        auth::create_api_key_profile(&name)
-                    } else {
-                        auth::create_oauth_profile(&name)
+                AuthCommands::Create { name, kind } => {
+                    let (result, default) = match &kind {
+                        AuthCreateKind::Oauth { token, default } => {
+                            (auth::create_oauth_profile(&name, token), *default)
+                        }
+                        AuthCreateKind::ApiKey { key, default } => {
+                            (auth::create_api_key_profile(&name, key), *default)
+                        }
                     };
                     result.and_then(|()| {
                         if default {
