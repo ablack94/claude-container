@@ -4,7 +4,12 @@ services:
     init: true
     stdin_open: true
     tty: true
+    user: "{{UID}}:{{GID}}"
     working_dir: /workarea
+    environment:
+      - HOME=/home/claude
+    tmpfs:
+      - /home/claude:uid={{UID}},gid={{GID}}
 {{ENV_FILE}}
 {{VOLUMES}}
 {{COMMAND}}

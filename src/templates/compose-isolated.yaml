@@ -18,12 +18,16 @@ services:
     init: true
     stdin_open: true
     tty: true
+    user: "{{UID}}:{{GID}}"
     working_dir: /workarea
     environment:
+      - HOME=/home/claude
       - HTTP_PROXY=http://gateway
       - HTTPS_PROXY=http://gateway
       - http_proxy=http://gateway
       - https_proxy=http://gateway
+    tmpfs:
+      - /home/claude:uid={{UID}},gid={{GID}}
 {{ENV_FILE}}
     networks:
       - internal

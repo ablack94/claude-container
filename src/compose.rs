@@ -4,6 +4,7 @@ use std::path::Path;
 const CLAUDE_SOURCE_IMAGE: &str = "ghcr.io/ablack94/docker-claude:stable";
 
 const DOCKERFILE_TEMPLATE: &str = include_str!("templates/Dockerfile");
+const ENTRYPOINT_SCRIPT: &str = include_str!("templates/entrypoint.sh");
 const SQUID_CONF_TEMPLATE: &str = include_str!("templates/squid.conf");
 const SIMPLE_COMPOSE_TEMPLATE: &str = include_str!("templates/compose-simple.yaml");
 const ISOLATED_COMPOSE_TEMPLATE: &str = include_str!("templates/compose-isolated.yaml");
@@ -105,12 +106,16 @@ fn generate_simple_compose(
     profile: Option<&str>,
     mounts: &[(String, String)],
     args: &[String],
+    uid: u32,
+    gid: u32,
 ) -> String {
     let (env_file, volumes, command) =
         format_env_file_volumes_command(profile, mounts, args);
 
     clean_yaml(
         SIMPLE_COMPOSE_TEMPLATE
+            .replace("{{UID}}", &uid.to_string())
+            .replace("{{GID}}", &gid.to_string())
             .replace("{{ENV_FILE}}", &env_file)
             .replace("{{VOLUMES}}", &volumes)
             .replace("{{COMMAND}}", &command),
@@ -123,12 +128,16 @@ fn generate_isolated_compose(
     squid_conf_path: &str,
     mounts: &[(String, String)],
     args: &[String],
+    uid: u32,
+    gid: u32,
 ) -> String {
     let (env_file, volumes, command) =
         format_env_file_volumes_command(profile, mounts, args);
 
     clean_yaml(
         ISOLATED_COMPOSE_TEMPLATE
+            .replace("{{UID}}", &uid.to_string())
+            .replace("{{GID}}", &gid.to_string())
             .replace("{{SQUID_CONF_PATH}}", squid_conf_path)
             .replace("{{ENV_FILE}}", &env_file)
             .replace("{{VOLUMES}}", &volumes)
@@ -136,19 +145,32 @@ fn generate_isolated_compose(
     )
 }
 
-/// Write the Dockerfile into the project directory.
-fn write_dockerfile(dir: &Path, base_image: &str, uid: u32, gid: u32) -> Result<(), String> {
+/// Write the Dockerfile and entrypoint script into the project directory.
+fn write_dockerfile(dir: &Path, base_image: &str) -> Result<(), String> {
     let content = DOCKERFILE_TEMPLATE
         .replace("{{BASE_IMAGE}}", base_image)
-        .replace("{{CLAUDE_SOURCE_IMAGE}}", CLAUDE_SOURCE_IMAGE)
-        .replace("{{UID}}", &uid.to_string())
-        .replace("{{GID}}", &gid.to_string());
+        .replace("{{CLAUDE_SOURCE_IMAGE}}", CLAUDE_SOURCE_IMAGE);
 
     let dockerfile_path = dir.join("Dockerfile");
     let mut f = std::fs::File::create(&dockerfile_path)
         .map_err(|e| format!("Failed to write Dockerfile: {e}"))?;
     f.write_all(content.as_bytes())
         .map_err(|e| format!("Failed to write Dockerfile: {e}"))?;
+
+    let entrypoint_path = dir.join("entrypoint.sh");
+    let mut f = std::fs::File::create(&entrypoint_path)
+        .map_err(|e| format!("Failed to write entrypoint.sh: {e}"))?;
+    f.write_all(ENTRYPOINT_SCRIPT.as_bytes())
+        .map_err(|e| format!("Failed to write entrypoint.sh: {e}"))?;
+
+    // Make entrypoint executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&entrypoint_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("Failed to set entrypoint.sh permissions: {e}"))?;
+    }
+
     Ok(())
 }
 
@@ -162,10 +184,10 @@ pub fn write_simple_project(
     uid: u32,
     gid: u32,
 ) -> Result<std::path::PathBuf, String> {
-    write_dockerfile(dir, base_image, uid, gid)?;
+    write_dockerfile(dir, base_image)?;
 
     let compose_path = dir.join("compose.yaml");
-    let content = generate_simple_compose(profile, mounts, args);
+    let content = generate_simple_compose(profile, mounts, args, uid, gid);
     let mut f = std::fs::File::create(&compose_path)
         .map_err(|e| format!("Failed to write compose.yaml: {e}"))?;
     f.write_all(content.as_bytes())
@@ -184,7 +206,7 @@ pub fn write_isolated_project(
     uid: u32,
     gid: u32,
 ) -> Result<std::path::PathBuf, String> {
-    write_dockerfile(dir, base_image, uid, gid)?;
+    write_dockerfile(dir, base_image)?;
 
     let mut hosts: Vec<&str> = vec![".anthropic.com", ".claude.com"];
     for h in extra_hosts {
@@ -208,7 +230,7 @@ pub fn write_isolated_project(
         let mut f = std::fs::File::create(&compose_path)
             .map_err(|e| format!("Failed to write compose.yaml: {e}"))?;
         f.write_all(
-            generate_isolated_compose(profile, "./squid.conf", mounts, args).as_bytes(),
+            generate_isolated_compose(profile, "./squid.conf", mounts, args, uid, gid).as_bytes(),
         )
         .map_err(|e| format!("Failed to write compose.yaml: {e}"))?;
     }
@@ -236,12 +258,15 @@ mod tests {
             "/tmp/squid.conf",
             &[("/home/user/.claude".into(), "/home/claude/.claude".into())],
             &[],
+            1000,
+            1000,
         );
         assert!(yml.contains("gateway:"));
         assert!(yml.contains("claude:"));
         assert!(yml.contains("build: ."));
         assert!(yml.contains("internal: true"));
         assert!(yml.contains("HTTPS_PROXY=http://gateway"));
+        assert!(yml.contains("user: \"1000:1000\""));
     }
 
     #[test]
@@ -250,9 +275,12 @@ mod tests {
             None,
             &[("/work".into(), "/workarea".into())],
             &[],
+            1000,
+            1000,
         );
         assert!(yml.contains("claude:"));
         assert!(yml.contains("build: ."));
+        assert!(yml.contains("user: \"1000:1000\""));
         assert!(!yml.contains("gateway:"));
         assert!(!yml.contains("internal: true"));
     }
