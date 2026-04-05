@@ -279,7 +279,7 @@ mod tests {
             1000,
         );
         assert!(yml.contains("claude:"));
-        assert!(yml.contains("build: ."));
+        assert!(yml.contains("network_mode: host"));
         assert!(yml.contains("user: \"1000:1000\""));
         assert!(!yml.contains("gateway:"));
         assert!(!yml.contains("internal: true"));

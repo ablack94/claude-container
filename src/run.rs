@@ -10,7 +10,7 @@ fn host_uid_gid() -> (u32, u32) {
 }
 
 /// Collect the standard volume mounts as (host, container) pairs.
-fn collect_mounts(forward_settings: bool) -> Result<Vec<(String, String)>, String> {
+fn collect_mounts(forward_settings: bool, forward_git_config: bool) -> Result<Vec<(String, String)>, String> {
     let home = std::env::var("HOME")
         .map_err(|_| "HOME environment variable not set".to_string())?;
     let cwd = std::env::current_dir()
@@ -31,6 +31,13 @@ fn collect_mounts(forward_settings: bool) -> Result<Vec<(String, String)>, Strin
         }
     }
 
+    if forward_git_config {
+        let gitconfig = format!("{home}/.gitconfig");
+        if std::path::Path::new(&gitconfig).exists() {
+            mounts.push((gitconfig, "/home/claude/.gitconfig:ro".to_string()));
+        }
+    }
+
     mounts.push((workdir, "/workarea".to_string()));
     Ok(mounts)
 }
@@ -42,9 +49,10 @@ pub fn build(
     isolated: bool,
     allow_hosts: &[String],
     forward_settings: bool,
+    forward_git_config: bool,
     args: &[String],
 ) -> Result<(), String> {
-    let mounts = collect_mounts(forward_settings)?;
+    let mounts = collect_mounts(forward_settings, forward_git_config)?;
     let (uid, gid) = host_uid_gid();
 
     let compose_dir = std::path::Path::new(".claude-container");

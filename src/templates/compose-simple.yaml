@@ -1,6 +1,7 @@
 services:
   claude:
     build: .
+    network_mode: host
     init: true
     stdin_open: true
     tty: true

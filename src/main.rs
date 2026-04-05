@@ -45,6 +45,10 @@ enum Commands {
         #[arg(long)]
         forward_settings: bool,
 
+        /// Mount host ~/.gitconfig into the container (read-only)
+        #[arg(long)]
+        forward_git_config: bool,
+
         /// Additional arguments passed to Claude inside the container
         #[arg(last = true)]
         args: Vec<String>,
@@ -330,6 +334,7 @@ fn main() {
             isolated,
             allow_hosts,
             forward_settings,
+            forward_git_config,
             args,
             run: should_run,
         } => {
@@ -340,6 +345,7 @@ fn main() {
                 use_isolation,
                 &allow_hosts,
                 forward_settings,
+                forward_git_config,
                 &args,
             ).and_then(|_| {
                 if should_run {
