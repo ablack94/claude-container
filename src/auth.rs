@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 /// Return the path to ~/.config/claude-container/.
 pub fn config_dir() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let home =
+        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
     Ok(PathBuf::from(home).join(".config").join("claude-container"))
 }
 
@@ -42,8 +42,7 @@ pub fn set_default_profile(name: &str) -> Result<(), String> {
     }
 
     let default = default_path()?;
-    std::fs::write(&default, name)
-        .map_err(|e| format!("Failed to write default profile: {e}"))?;
+    std::fs::write(&default, name).map_err(|e| format!("Failed to write default profile: {e}"))?;
     eprintln!("Default profile set to '{name}'");
     Ok(())
 }
@@ -75,8 +74,7 @@ pub fn remove_profile(name: &str) -> Result<(), String> {
         return Err(format!("Profile '{name}' does not exist"));
     }
 
-    std::fs::remove_file(&path)
-        .map_err(|e| format!("Failed to remove profile: {e}"))?;
+    std::fs::remove_file(&path).map_err(|e| format!("Failed to remove profile: {e}"))?;
 
     // Clear default if it pointed to this profile
     if default_profile().as_deref() == Some(name) {
@@ -145,7 +143,10 @@ pub fn resolve_auth(profile: Option<&str>) -> Result<ResolvedAuth, String> {
         None => None,
     };
 
-    Ok(ResolvedAuth { profile_env, host_api_key })
+    Ok(ResolvedAuth {
+        profile_env,
+        host_api_key,
+    })
 }
 
 /// Write the host ANTHROPIC_API_KEY to a small env file for compose to reference.
@@ -188,4 +189,3 @@ pub fn create_api_key_profile(name: &str, key: &str) -> Result<(), String> {
     eprintln!("Profile '{name}' saved to {}", path.display());
     Ok(())
 }
-

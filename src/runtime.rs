@@ -82,7 +82,9 @@ impl Runtime {
         Err(format!(
             "No compose support found for '{}'.\n\
              Install either the compose plugin (`{} compose`) or the standalone `{}-compose` tool.",
-            self.cmd(), self.cmd(), self.cmd()
+            self.cmd(),
+            self.cmd(),
+            self.cmd()
         ))
     }
 }
@@ -99,7 +101,10 @@ impl std::str::FromStr for Runtime {
         match s.to_lowercase().as_str() {
             "docker" => Ok(Runtime::Docker),
             "podman" => Ok(Runtime::Podman),
-            other => Err(format!("Unknown runtime '{}'. Use 'docker' or 'podman'.", other)),
+            other => Err(format!(
+                "Unknown runtime '{}'. Use 'docker' or 'podman'.",
+                other
+            )),
         }
     }
 }
@@ -114,10 +119,11 @@ fn command_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Runtime configuration stored in ~/.config/claude-container/config.
+/// Configuration stored in ~/.config/claude-container/config.
 pub struct RuntimeConfig {
     pub default: Option<Runtime>,
     pub banned: Vec<Runtime>,
+    pub version: Option<String>,
 }
 
 impl RuntimeConfig {
@@ -129,16 +135,29 @@ impl RuntimeConfig {
     pub fn load() -> Self {
         let path = match Self::config_path() {
             Ok(p) => p,
-            Err(_) => return Self { default: None, banned: Vec::new() },
+            Err(_) => {
+                return Self {
+                    default: None,
+                    banned: Vec::new(),
+                    version: None,
+                }
+            }
         };
 
         let contents = match std::fs::read_to_string(&path) {
             Ok(c) => c,
-            Err(_) => return Self { default: None, banned: Vec::new() },
+            Err(_) => {
+                return Self {
+                    default: None,
+                    banned: Vec::new(),
+                    version: None,
+                }
+            }
         };
 
         let mut default = None;
         let mut banned = Vec::new();
+        let mut version = None;
 
         for line in contents.lines() {
             let line = line.trim();
@@ -150,10 +169,19 @@ impl RuntimeConfig {
                         banned.push(rt);
                     }
                 }
+            } else if let Some(value) = line.strip_prefix("version=") {
+                let v = value.trim();
+                if !v.is_empty() {
+                    version = Some(v.to_string());
+                }
             }
         }
 
-        Self { default, banned }
+        Self {
+            default,
+            banned,
+            version,
+        }
     }
 
     /// Save config to disk.
@@ -170,6 +198,9 @@ impl RuntimeConfig {
         }
         for rt in &self.banned {
             lines.push(format!("ban={rt}"));
+        }
+        if let Some(ref v) = self.version {
+            lines.push(format!("version={v}"));
         }
 
         std::fs::write(&path, lines.join("\n") + "\n")
@@ -197,5 +228,13 @@ impl RuntimeConfig {
 
     pub fn remove_ban(&mut self, rt: Runtime) {
         self.banned.retain(|&r| r != rt);
+    }
+
+    pub fn set_version(&mut self, version: String) {
+        self.version = Some(version);
+    }
+
+    pub fn clear_version(&mut self) {
+        self.version = None;
     }
 }

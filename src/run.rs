@@ -10,12 +10,18 @@ fn host_uid_gid() -> (u32, u32) {
 }
 
 /// Collect the standard volume mounts as (host, container) pairs.
-fn collect_mounts(forward_settings: bool, forward_git_config: bool) -> Result<Vec<(String, String)>, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME environment variable not set".to_string())?;
-    let cwd = std::env::current_dir()
-        .map_err(|e| format!("Failed to get current directory: {e}"))?;
-    let workdir = cwd.to_str().ok_or("Current directory path is not valid UTF-8")?.to_string();
+fn collect_mounts(
+    forward_settings: bool,
+    forward_git_config: bool,
+) -> Result<Vec<(String, String)>, String> {
+    let home =
+        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    let cwd =
+        std::env::current_dir().map_err(|e| format!("Failed to get current directory: {e}"))?;
+    let workdir = cwd
+        .to_str()
+        .ok_or("Current directory path is not valid UTF-8")?
+        .to_string();
 
     let mut mounts = Vec::new();
 
@@ -43,6 +49,7 @@ fn collect_mounts(forward_settings: bool, forward_git_config: bool) -> Result<Ve
 }
 
 /// Build the .claude-container/ project directory (Dockerfile, compose.yaml, etc.)
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     base_image: &str,
     profile: Option<&str>,
@@ -51,6 +58,7 @@ pub fn build(
     forward_settings: bool,
     forward_git_config: bool,
     args: &[String],
+    version: Option<&str>,
 ) -> Result<(), String> {
     let mounts = collect_mounts(forward_settings, forward_git_config)?;
     let (uid, gid) = host_uid_gid();
@@ -70,9 +78,28 @@ pub fn build(
 
     if isolated {
         eprintln!("Starting network-isolated session...");
-        compose::write_isolated_project(compose_dir, base_image, profile, allow_hosts, &mounts, args, uid, gid)?;
+        compose::write_isolated_project(
+            compose_dir,
+            base_image,
+            profile,
+            allow_hosts,
+            &mounts,
+            args,
+            uid,
+            gid,
+            version,
+        )?;
     } else {
-        compose::write_simple_project(compose_dir, base_image, profile, &mounts, args, uid, gid)?;
+        compose::write_simple_project(
+            compose_dir,
+            base_image,
+            profile,
+            &mounts,
+            args,
+            uid,
+            gid,
+            version,
+        )?;
     };
 
     eprintln!("Built .claude-container/ project");
@@ -80,13 +107,21 @@ pub fn build(
 }
 
 /// Run a compose project, tearing down on exit.
-fn run_compose(runtime: Runtime, compose_file: &std::path::Path, rebuild: bool) -> Result<(), String> {
+fn run_compose(
+    runtime: Runtime,
+    compose_file: &std::path::Path,
+    rebuild: bool,
+) -> Result<(), String> {
     let compose_file_str = compose_file.to_str().ok_or("Non-UTF-8 path")?;
     let (cmd, base_args) = runtime.compose_cmd()?;
 
     let mut args: Vec<String> = base_args.clone();
     args.extend(["-f".to_string(), compose_file_str.to_string()]);
-    args.extend(["run".to_string(), "--rm".to_string(), "--service-ports".to_string()]);
+    args.extend([
+        "run".to_string(),
+        "--rm".to_string(),
+        "--service-ports".to_string(),
+    ]);
     if rebuild {
         args.push("--build".to_string());
     }
@@ -99,7 +134,11 @@ fn run_compose(runtime: Runtime, compose_file: &std::path::Path, rebuild: bool) 
 
     // Always tear down on exit
     let mut down_args: Vec<String> = base_args;
-    down_args.extend(["-f".to_string(), compose_file_str.to_string(), "down".to_string()]);
+    down_args.extend([
+        "-f".to_string(),
+        compose_file_str.to_string(),
+        "down".to_string(),
+    ]);
     let _ = Command::new(&cmd)
         .args(&down_args)
         .stdout(std::process::Stdio::null())
