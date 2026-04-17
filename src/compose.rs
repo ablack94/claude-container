@@ -1,7 +1,14 @@
 use std::io::Write;
 use std::path::Path;
 
-const CLAUDE_SOURCE_IMAGE: &str = "ghcr.io/ablack94/docker-claude:stable";
+const CLAUDE_IMAGE_BASE: &str = "ghcr.io/ablack94/docker-claude";
+const DEFAULT_VERSION: &str = "stable";
+
+/// Build the full claude source image reference for a given version tag.
+pub fn claude_source_image(version: Option<&str>) -> String {
+    let tag = version.unwrap_or(DEFAULT_VERSION);
+    format!("{CLAUDE_IMAGE_BASE}:{tag}")
+}
 
 const DOCKERFILE_TEMPLATE: &str = include_str!("templates/Dockerfile");
 const ENTRYPOINT_SCRIPT: &str = include_str!("templates/entrypoint.sh");
@@ -30,7 +37,10 @@ fn format_env_file_volumes_command(
         Ok(a) => a,
         Err(e) => {
             eprintln!("Warning: {e}");
-            crate::auth::ResolvedAuth { profile_env: None, host_api_key: None }
+            crate::auth::ResolvedAuth {
+                profile_env: None,
+                host_api_key: None,
+            }
         }
     };
 
@@ -95,7 +105,7 @@ fn clean_yaml(s: String) -> String {
         prev_blank = blank;
     }
     // Trim trailing blank lines, ensure single trailing newline
-    while out.last().map_or(false, |l| l.trim().is_empty()) {
+    while out.last().is_some_and(|l| l.trim().is_empty()) {
         out.pop();
     }
     out.join("\n") + "\n"
@@ -109,8 +119,7 @@ fn generate_simple_compose(
     uid: u32,
     gid: u32,
 ) -> String {
-    let (env_file, volumes, command) =
-        format_env_file_volumes_command(profile, mounts, args);
+    let (env_file, volumes, command) = format_env_file_volumes_command(profile, mounts, args);
 
     clean_yaml(
         SIMPLE_COMPOSE_TEMPLATE
@@ -131,8 +140,7 @@ fn generate_isolated_compose(
     uid: u32,
     gid: u32,
 ) -> String {
-    let (env_file, volumes, command) =
-        format_env_file_volumes_command(profile, mounts, args);
+    let (env_file, volumes, command) = format_env_file_volumes_command(profile, mounts, args);
 
     clean_yaml(
         ISOLATED_COMPOSE_TEMPLATE
@@ -146,10 +154,11 @@ fn generate_isolated_compose(
 }
 
 /// Write the Dockerfile and entrypoint script into the project directory.
-fn write_dockerfile(dir: &Path, base_image: &str) -> Result<(), String> {
+fn write_dockerfile(dir: &Path, base_image: &str, version: Option<&str>) -> Result<(), String> {
+    let source_image = claude_source_image(version);
     let content = DOCKERFILE_TEMPLATE
         .replace("{{BASE_IMAGE}}", base_image)
-        .replace("{{CLAUDE_SOURCE_IMAGE}}", CLAUDE_SOURCE_IMAGE);
+        .replace("{{CLAUDE_SOURCE_IMAGE}}", &source_image);
 
     let dockerfile_path = dir.join("Dockerfile");
     let mut f = std::fs::File::create(&dockerfile_path)
@@ -175,6 +184,7 @@ fn write_dockerfile(dir: &Path, base_image: &str) -> Result<(), String> {
 }
 
 /// Write out a simple (non-isolated) compose project.
+#[allow(clippy::too_many_arguments)]
 pub fn write_simple_project(
     dir: &Path,
     base_image: &str,
@@ -183,8 +193,9 @@ pub fn write_simple_project(
     args: &[String],
     uid: u32,
     gid: u32,
+    version: Option<&str>,
 ) -> Result<std::path::PathBuf, String> {
-    write_dockerfile(dir, base_image)?;
+    write_dockerfile(dir, base_image, version)?;
 
     let compose_path = dir.join("compose.yaml");
     let content = generate_simple_compose(profile, mounts, args, uid, gid);
@@ -196,6 +207,7 @@ pub fn write_simple_project(
 }
 
 /// Write out a network-isolated compose project (with squid gateway).
+#[allow(clippy::too_many_arguments)]
 pub fn write_isolated_project(
     dir: &Path,
     base_image: &str,
@@ -205,8 +217,9 @@ pub fn write_isolated_project(
     args: &[String],
     uid: u32,
     gid: u32,
+    version: Option<&str>,
 ) -> Result<std::path::PathBuf, String> {
-    write_dockerfile(dir, base_image)?;
+    write_dockerfile(dir, base_image, version)?;
 
     let mut hosts: Vec<&str> = vec![".anthropic.com", ".claude.com"];
     for h in extra_hosts {

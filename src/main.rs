@@ -7,7 +7,10 @@ use clap::{Parser, Subcommand};
 use runtime::Runtime;
 
 #[derive(Parser)]
-#[command(name = "claude-container", about = "Build and run Claude in any container image")]
+#[command(
+    name = "claude-container",
+    about = "Build and run Claude in any container image"
+)]
 struct Cli {
     /// Container runtime to use (overrides configured default)
     #[arg(long, global = true)]
@@ -48,6 +51,10 @@ enum Commands {
         /// Mount host ~/.gitconfig into the container (read-only)
         #[arg(long)]
         forward_git_config: bool,
+
+        /// Claude version tag to use (e.g. stable, nightly). Overrides global config.
+        #[arg(long)]
+        version: Option<String>,
 
         /// Additional arguments passed to Claude inside the container
         #[arg(last = true)]
@@ -153,6 +160,16 @@ enum ConfigCommands {
         remove: bool,
     },
 
+    /// Set or show the default Claude version (docker-claude image tag)
+    Version {
+        /// Version tag to set as default (e.g. stable, nightly). Omit to show current.
+        name: Option<String>,
+
+        /// Clear the default version (revert to "stable")
+        #[arg(long)]
+        clear: bool,
+    },
+
     /// Show current configuration
     Show,
 }
@@ -195,6 +212,25 @@ fn handle_config(command: ConfigCommands) -> Result<(), String> {
                 eprintln!("Banned runtime '{name}'.");
             }
         }
+        ConfigCommands::Version { name, clear } => {
+            if clear {
+                let mut config = runtime::RuntimeConfig::load();
+                config.clear_version();
+                config.save()?;
+                eprintln!("Default version cleared (will use \"stable\").");
+            } else if let Some(v) = name {
+                let mut config = runtime::RuntimeConfig::load();
+                config.set_version(v.clone());
+                config.save()?;
+                eprintln!("Default version set to '{v}'.");
+            } else {
+                let config = runtime::RuntimeConfig::load();
+                match config.version {
+                    Some(v) => println!("{v}"),
+                    None => eprintln!("No default version set (using \"stable\")."),
+                }
+            }
+        }
         ConfigCommands::Show => {
             let config = runtime::RuntimeConfig::load();
             match config.default {
@@ -206,6 +242,10 @@ fn handle_config(command: ConfigCommands) -> Result<(), String> {
             } else {
                 let names: Vec<_> = config.banned.iter().map(|r| r.to_string()).collect();
                 println!("banned: {}", names.join(", "));
+            }
+            match config.version {
+                Some(v) => println!("version: {v}"),
+                None => println!("version: stable (default)"),
             }
         }
     }
@@ -244,45 +284,39 @@ fn main() {
                         }
                     })
                 }
-                AuthCommands::List => {
-                    match auth::list_profiles() {
-                        Ok(profiles) => {
-                            if profiles.is_empty() {
-                                eprintln!("No auth profiles configured.");
-                                eprintln!("Create one with: claude-container auth create <name>");
-                            } else {
-                                let default = auth::default_profile();
-                                for name in &profiles {
-                                    if default.as_deref() == Some(name.as_str()) {
-                                        println!("* {name} (default)");
-                                    } else {
-                                        println!("  {name}");
-                                    }
+                AuthCommands::List => match auth::list_profiles() {
+                    Ok(profiles) => {
+                        if profiles.is_empty() {
+                            eprintln!("No auth profiles configured.");
+                            eprintln!("Create one with: claude-container auth create <name>");
+                        } else {
+                            let default = auth::default_profile();
+                            for name in &profiles {
+                                if default.as_deref() == Some(name.as_str()) {
+                                    println!("* {name} (default)");
+                                } else {
+                                    println!("  {name}");
                                 }
                             }
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                },
+                AuthCommands::Default { name } => match name {
+                    Some(name) => auth::set_default_profile(&name),
+                    None => match auth::default_profile() {
+                        Some(name) => {
+                            println!("{name}");
                             Ok(())
                         }
-                        Err(e) => Err(e),
-                    }
-                }
-                AuthCommands::Default { name } => {
-                    match name {
-                        Some(name) => auth::set_default_profile(&name),
                         None => {
-                            match auth::default_profile() {
-                                Some(name) => {
-                                    println!("{name}");
-                                    Ok(())
-                                }
-                                None => {
-                                    eprintln!("No default profile set.");
-                                    eprintln!("Set one with: claude-container auth default <name>");
-                                    Ok(())
-                                }
-                            }
+                            eprintln!("No default profile set.");
+                            eprintln!("Set one with: claude-container auth default <name>");
+                            Ok(())
                         }
-                    }
-                }
+                    },
+                },
                 AuthCommands::Remove { name } => auth::remove_profile(&name),
             };
 
@@ -335,10 +369,13 @@ fn main() {
             allow_hosts,
             forward_settings,
             forward_git_config,
+            version,
             args,
             run: should_run,
         } => {
             let use_isolation = isolated || !allow_hosts.is_empty();
+            // Resolve version: CLI flag > global config > default
+            let resolved_version = version.or_else(|| runtime::RuntimeConfig::load().version);
             run::build(
                 &base_image,
                 profile.as_deref(),
@@ -347,7 +384,9 @@ fn main() {
                 forward_settings,
                 forward_git_config,
                 &args,
-            ).and_then(|_| {
+                resolved_version.as_deref(),
+            )
+            .and_then(|_| {
                 if should_run {
                     run::run(rt, false)
                 } else {
