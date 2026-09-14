@@ -1,6 +1,7 @@
 use std::process::Command;
 
 use crate::compose;
+use crate::persist;
 use crate::runtime::Runtime;
 
 /// Get the host user's UID and GID.
@@ -13,6 +14,7 @@ fn host_uid_gid() -> (u32, u32) {
 fn collect_mounts(
     forward_settings: bool,
     forward_git_config: bool,
+    persist_state: bool,
 ) -> Result<Vec<(String, String)>, String> {
     let home =
         std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
@@ -37,6 +39,10 @@ fn collect_mounts(
         }
     }
 
+    if persist_state {
+        mounts.extend(persist::persist_mounts(&home, &workdir, forward_settings)?);
+    }
+
     if forward_git_config {
         let gitconfig = format!("{home}/.gitconfig");
         if std::path::Path::new(&gitconfig).exists() {
@@ -57,11 +63,23 @@ pub fn build(
     allow_hosts: &[String],
     forward_settings: bool,
     forward_git_config: bool,
+    persist_state: bool,
     args: &[String],
     version: Option<&str>,
 ) -> Result<(), String> {
-    let mounts = collect_mounts(forward_settings, forward_git_config)?;
+    let mounts = collect_mounts(forward_settings, forward_git_config, persist_state)?;
     let (uid, gid) = host_uid_gid();
+
+    // Persisted state is bind-mounted *inside* the /home/claude tmpfs. Give
+    // ~/.claude its own user-owned tmpfs so the surrounding directory stays
+    // writable — otherwise the runtime creates it root-owned and Claude cannot
+    // write its settings. With --forward-settings that path is already a bind
+    // mount of the host's ~/.claude, so no tmpfs is needed (or allowed) there.
+    let extra_tmpfs: Vec<String> = if persist_state && !forward_settings {
+        vec![persist::CONTAINER_CLAUDE_DIR.to_string()]
+    } else {
+        Vec::new()
+    };
 
     let compose_dir = std::path::Path::new(".claude-container");
     std::fs::create_dir_all(compose_dir)
@@ -84,6 +102,7 @@ pub fn build(
             profile,
             allow_hosts,
             &mounts,
+            &extra_tmpfs,
             args,
             uid,
             gid,
@@ -95,6 +114,7 @@ pub fn build(
             base_image,
             profile,
             &mounts,
+            &extra_tmpfs,
             args,
             uid,
             gid,

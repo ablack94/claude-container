@@ -80,6 +80,9 @@ claude-container build ubuntu:24.04 -- -p "hello"
 # Forward host ~/.claude and ~/.claude.json into the container
 claude-container build ubuntu:24.04 --forward-settings
 
+# Persist chats and memories to the host ~/.claude tree
+claude-container build ubuntu:24.04 --persist --run
+
 # Explicit runtime
 claude-container --runtime podman build ubuntu:24.04
 ```
@@ -93,6 +96,51 @@ claude-container run
 # Force rebuild of the container image
 claude-container run --rebuild
 ```
+
+### Persisting chats and memories
+
+By default the container's home directory is a tmpfs, so transcripts, memories
+and prompt history die with the container. `--persist` keeps them on the host
+inside your regular `~/.claude` tree:
+
+```sh
+# Persist this session's chats and memories
+claude-container build ubuntu:24.04 --persist --run
+
+# Persist by default for every build
+claude-container config persist true
+
+# Opt out for a single build
+claude-container build ubuntu:24.04 --no-persist
+```
+
+The project is always mounted at `/workarea` inside the container, so every
+container would otherwise write to the same `~/.claude/projects/-workarea`
+directory. Instead the project directory is remapped to the slug of the *host*
+path, which is what the host's own Claude Code uses:
+
+```
+~/.claude/projects/-home-you-code-myproj/   (host)
+        |
+        +-- <session-id>.jsonl   chats
+        +-- memory/              memories
+        |
+        v  bind mount
+/home/claude/.claude/projects/-workarea/    (container)
+```
+
+Because the naming lines up, sessions run in the container show up in
+`claude --resume` on the host for that same project, and memories are shared
+between them.
+
+Also persisted: `~/.claude/history.jsonl` (prompt history), `~/.claude/CLAUDE.md`
+(user-level memory — created empty if missing), `~/.claude/todos/` and
+`~/.claude/shell-snapshots/`. Everything else in the container home stays
+ephemeral. With `--forward-settings` the whole `~/.claude` is already mounted,
+so `--persist` only adds the project remap.
+
+Resolution order for the setting: `--no-persist` > `--persist` >
+`config persist` > off.
 
 ### Network isolation
 
@@ -124,6 +172,9 @@ and ban runtimes you don't want used:
 ```sh
 # Set podman as the default
 claude-container config runtime podman
+
+# Persist chats and memories by default
+claude-container config persist true
 
 # Ban docker entirely
 claude-container config ban docker
@@ -162,3 +213,9 @@ claude-container -C /path/to/project run
 | `$(pwd)` | `/workarea` (working dir) | Always |
 | `~/.claude` | `/home/claude/.claude` | `--forward-settings` |
 | `~/.claude.json` | `/home/claude/.claude.json` | `--forward-settings` |
+| `~/.gitconfig` | `/home/claude/.gitconfig` (ro) | `--forward-git-config` |
+| `~/.claude/projects/<host slug>` | `/home/claude/.claude/projects/-workarea` | `--persist` |
+| `~/.claude/history.jsonl` | `/home/claude/.claude/history.jsonl` | `--persist` |
+| `~/.claude/CLAUDE.md` | `/home/claude/.claude/CLAUDE.md` | `--persist` |
+| `~/.claude/todos` | `/home/claude/.claude/todos` | `--persist` |
+| `~/.claude/shell-snapshots` | `/home/claude/.claude/shell-snapshots` | `--persist` |

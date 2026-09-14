@@ -124,6 +124,7 @@ pub struct RuntimeConfig {
     pub default: Option<Runtime>,
     pub banned: Vec<Runtime>,
     pub version: Option<String>,
+    pub persist: Option<bool>,
 }
 
 impl RuntimeConfig {
@@ -140,6 +141,7 @@ impl RuntimeConfig {
                     default: None,
                     banned: Vec::new(),
                     version: None,
+                    persist: None,
                 }
             }
         };
@@ -151,6 +153,7 @@ impl RuntimeConfig {
                     default: None,
                     banned: Vec::new(),
                     version: None,
+                    persist: None,
                 }
             }
         };
@@ -158,6 +161,7 @@ impl RuntimeConfig {
         let mut default = None;
         let mut banned = Vec::new();
         let mut version = None;
+        let mut persist = None;
 
         for line in contents.lines() {
             let line = line.trim();
@@ -174,6 +178,8 @@ impl RuntimeConfig {
                 if !v.is_empty() {
                     version = Some(v.to_string());
                 }
+            } else if let Some(value) = line.strip_prefix("persist=") {
+                persist = value.trim().parse::<bool>().ok();
             }
         }
 
@@ -181,6 +187,7 @@ impl RuntimeConfig {
             default,
             banned,
             version,
+            persist,
         }
     }
 
@@ -201,6 +208,9 @@ impl RuntimeConfig {
         }
         if let Some(ref v) = self.version {
             lines.push(format!("version={v}"));
+        }
+        if let Some(p) = self.persist {
+            lines.push(format!("persist={p}"));
         }
 
         std::fs::write(&path, lines.join("\n") + "\n")
@@ -236,5 +246,13 @@ impl RuntimeConfig {
 
     pub fn clear_version(&mut self) {
         self.version = None;
+    }
+
+    pub fn set_persist(&mut self, persist: bool) {
+        self.persist = Some(persist);
+    }
+
+    pub fn clear_persist(&mut self) {
+        self.persist = None;
     }
 }
