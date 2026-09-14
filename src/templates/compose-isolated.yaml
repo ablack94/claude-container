@@ -28,7 +28,7 @@ services:
       - https_proxy=http://gateway
     tmpfs:
       - /home/claude:uid={{UID}},gid={{GID}}
-{{ENV_FILE}}
+{{TMPFS_EXTRA}}{{ENV_FILE}}
     networks:
       - internal
     depends_on:

@@ -1,5 +1,6 @@
 mod auth;
 mod compose;
+mod persist;
 mod run;
 mod runtime;
 
@@ -51,6 +52,14 @@ enum Commands {
         /// Mount host ~/.gitconfig into the container (read-only)
         #[arg(long)]
         forward_git_config: bool,
+
+        /// Persist chats and memories to the host ~/.claude tree
+        #[arg(long, conflicts_with = "no_persist")]
+        persist: bool,
+
+        /// Keep chats and memories in the container (overrides `config persist`)
+        #[arg(long = "no-persist")]
+        no_persist: bool,
 
         /// Claude version tag to use (e.g. stable, nightly). Overrides global config.
         #[arg(long)]
@@ -170,6 +179,17 @@ enum ConfigCommands {
         clear: bool,
     },
 
+    /// Set or show whether chats and memories are persisted by default
+    Persist {
+        /// true to persist by default, false to keep state in the container.
+        /// Omit to show the current setting.
+        name: Option<bool>,
+
+        /// Clear the setting (revert to off unless --persist is passed)
+        #[arg(long)]
+        clear: bool,
+    },
+
     /// Show current configuration
     Show,
 }
@@ -231,6 +251,26 @@ fn handle_config(command: ConfigCommands) -> Result<(), String> {
                 }
             }
         }
+        ConfigCommands::Persist { name, clear } => {
+            if clear {
+                let mut config = runtime::RuntimeConfig::load();
+                config.clear_persist();
+                config.save()?;
+                eprintln!("Persist setting cleared (off unless --persist is passed).");
+            } else if let Some(p) = name {
+                let mut config = runtime::RuntimeConfig::load();
+                config.set_persist(p);
+                config.save()?;
+                if p {
+                    eprintln!("Chats and memories will be persisted by default.");
+                } else {
+                    eprintln!("Chats and memories will stay in the container by default.");
+                }
+            } else {
+                let config = runtime::RuntimeConfig::load();
+                println!("{}", config.persist.unwrap_or(false));
+            }
+        }
         ConfigCommands::Show => {
             let config = runtime::RuntimeConfig::load();
             match config.default {
@@ -246,6 +286,10 @@ fn handle_config(command: ConfigCommands) -> Result<(), String> {
             match config.version {
                 Some(v) => println!("version: {v}"),
                 None => println!("version: stable (default)"),
+            }
+            match config.persist {
+                Some(p) => println!("persist: {p}"),
+                None => println!("persist: false (default)"),
             }
         }
     }
@@ -369,13 +413,18 @@ fn main() {
             allow_hosts,
             forward_settings,
             forward_git_config,
+            persist,
+            no_persist,
             version,
             args,
             run: should_run,
         } => {
             let use_isolation = isolated || !allow_hosts.is_empty();
+            let config = runtime::RuntimeConfig::load();
             // Resolve version: CLI flag > global config > default
-            let resolved_version = version.or_else(|| runtime::RuntimeConfig::load().version);
+            let resolved_version = version.or(config.version);
+            // Resolve persistence: --no-persist > --persist > global config > off
+            let persist_state = !no_persist && (persist || config.persist.unwrap_or(false));
             run::build(
                 &base_image,
                 profile.as_deref(),
@@ -383,6 +432,7 @@ fn main() {
                 &allow_hosts,
                 forward_settings,
                 forward_git_config,
+                persist_state,
                 &args,
                 resolved_version.as_deref(),
             )

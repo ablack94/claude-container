@@ -27,6 +27,21 @@ fn generate_squid_conf(allowed_hosts: &[&str]) -> String {
     SQUID_CONF_TEMPLATE.replace("{{DOMAIN_ACLS}}", &domain_acls)
 }
 
+/// Render extra tmpfs mounts, one per container path, owned by the host user.
+///
+/// Paths nested inside the /home/claude tmpfs are otherwise created by the
+/// runtime as root-owned mountpoints, which the container (running as the host
+/// user) cannot write to.
+fn format_tmpfs_extra(paths: &[String], uid: u32, gid: u32) -> String {
+    if paths.is_empty() {
+        return String::new();
+    }
+    paths
+        .iter()
+        .map(|p| format!("      - {p}:uid={uid},gid={gid}\n"))
+        .collect()
+}
+
 /// Generate common substitution values.
 fn format_env_file_volumes_command(
     profile: Option<&str>,
@@ -115,6 +130,7 @@ fn clean_yaml(s: String) -> String {
 fn generate_simple_compose(
     profile: Option<&str>,
     mounts: &[(String, String)],
+    extra_tmpfs: &[String],
     args: &[String],
     uid: u32,
     gid: u32,
@@ -125,6 +141,7 @@ fn generate_simple_compose(
         SIMPLE_COMPOSE_TEMPLATE
             .replace("{{UID}}", &uid.to_string())
             .replace("{{GID}}", &gid.to_string())
+            .replace("{{TMPFS_EXTRA}}", &format_tmpfs_extra(extra_tmpfs, uid, gid))
             .replace("{{ENV_FILE}}", &env_file)
             .replace("{{VOLUMES}}", &volumes)
             .replace("{{COMMAND}}", &command),
@@ -136,6 +153,7 @@ fn generate_isolated_compose(
     profile: Option<&str>,
     squid_conf_path: &str,
     mounts: &[(String, String)],
+    extra_tmpfs: &[String],
     args: &[String],
     uid: u32,
     gid: u32,
@@ -146,6 +164,7 @@ fn generate_isolated_compose(
         ISOLATED_COMPOSE_TEMPLATE
             .replace("{{UID}}", &uid.to_string())
             .replace("{{GID}}", &gid.to_string())
+            .replace("{{TMPFS_EXTRA}}", &format_tmpfs_extra(extra_tmpfs, uid, gid))
             .replace("{{SQUID_CONF_PATH}}", squid_conf_path)
             .replace("{{ENV_FILE}}", &env_file)
             .replace("{{VOLUMES}}", &volumes)
@@ -190,6 +209,7 @@ pub fn write_simple_project(
     base_image: &str,
     profile: Option<&str>,
     mounts: &[(String, String)],
+    extra_tmpfs: &[String],
     args: &[String],
     uid: u32,
     gid: u32,
@@ -198,7 +218,7 @@ pub fn write_simple_project(
     write_dockerfile(dir, base_image, version)?;
 
     let compose_path = dir.join("compose.yaml");
-    let content = generate_simple_compose(profile, mounts, args, uid, gid);
+    let content = generate_simple_compose(profile, mounts, extra_tmpfs, args, uid, gid);
     let mut f = std::fs::File::create(&compose_path)
         .map_err(|e| format!("Failed to write compose.yaml: {e}"))?;
     f.write_all(content.as_bytes())
@@ -214,6 +234,7 @@ pub fn write_isolated_project(
     profile: Option<&str>,
     extra_hosts: &[String],
     mounts: &[(String, String)],
+    extra_tmpfs: &[String],
     args: &[String],
     uid: u32,
     gid: u32,
@@ -243,7 +264,8 @@ pub fn write_isolated_project(
         let mut f = std::fs::File::create(&compose_path)
             .map_err(|e| format!("Failed to write compose.yaml: {e}"))?;
         f.write_all(
-            generate_isolated_compose(profile, "./squid.conf", mounts, args, uid, gid).as_bytes(),
+            generate_isolated_compose(profile, "./squid.conf", mounts, extra_tmpfs, args, uid, gid)
+                .as_bytes(),
         )
         .map_err(|e| format!("Failed to write compose.yaml: {e}"))?;
     }
@@ -271,6 +293,7 @@ mod tests {
             "/tmp/squid.conf",
             &[("/home/user/.claude".into(), "/home/claude/.claude".into())],
             &[],
+            &[],
             1000,
             1000,
         );
@@ -283,10 +306,25 @@ mod tests {
     }
 
     #[test]
+    fn test_extra_tmpfs_is_owned_by_the_host_user() {
+        let yml = generate_simple_compose(
+            None,
+            &[("/work".into(), "/workarea".into())],
+            &["/home/claude/.claude".to_string()],
+            &[],
+            1000,
+            1000,
+        );
+        assert!(yml.contains("- /home/claude:uid=1000,gid=1000"));
+        assert!(yml.contains("- /home/claude/.claude:uid=1000,gid=1000"));
+    }
+
+    #[test]
     fn test_simple_compose_structure() {
         let yml = generate_simple_compose(
             None,
             &[("/work".into(), "/workarea".into())],
+            &[],
             &[],
             1000,
             1000,
