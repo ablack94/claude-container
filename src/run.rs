@@ -1,6 +1,7 @@
 use std::process::Command;
 
 use crate::compose;
+use crate::devcontainer;
 use crate::persist;
 use crate::runtime::Runtime;
 
@@ -66,6 +67,8 @@ pub fn build(
     persist_state: bool,
     args: &[String],
     version: Option<&str>,
+    devcontainer_enabled: bool,
+    vscode_extensions: &[String],
 ) -> Result<(), String> {
     let mounts = collect_mounts(forward_settings, forward_git_config, persist_state)?;
     let (uid, gid) = host_uid_gid();
@@ -121,6 +124,20 @@ pub fn build(
             version,
         )?;
     };
+
+    if devcontainer_enabled {
+        if !args.is_empty() {
+            eprintln!(
+                "Warning: trailing arguments apply to `claude-container run` only — \
+                 the dev container override replaces the container command, so they \
+                 are ignored in dev container sessions."
+            );
+        }
+        // The project root is the current directory; an empty path keeps the
+        // printed paths relative (".devcontainer/devcontainer.json").
+        let project_dir = std::path::Path::new("");
+        devcontainer::write_devcontainer(project_dir, compose_dir, vscode_extensions)?;
+    }
 
     eprintln!("Built .claude-container/ project");
     Ok(())
