@@ -157,7 +157,7 @@ Two files are written:
 | File | Purpose |
 |------|---------|
 | `.devcontainer/devcontainer.json` | What VS Code reads — points at both compose files |
-| `.claude-container/compose.devcontainer.yaml` | Compose override that keeps the container idling |
+| `.claude-container/compose.devcontainer.yaml` | Compose override that keeps the container idling and mounts the VS Code server cache |
 
 Then run **Dev Containers: Reopen in Container** from the VS Code command
 palette. The project is opened at `/workarea`, the same path the normal
@@ -183,6 +183,16 @@ any `--vscode-extension` IDs are added to it. Credentials and environment come
 from exactly the same `env_file` mechanism as the regular compose flow, so the
 auth profile selected with `--profile` (or the default profile, or
 `ANTHROPIC_API_KEY`) is available inside the dev container.
+
+The VS Code server and the extensions it installs are cached on the host under
+`~/.cache/claude-container/vscode-server/<project>/`, which the override
+bind-mounts at `/home/claude/.vscode-server`. This is required, not just an
+optimization: the container's home directory is a tmpfs, and Docker mounts
+tmpfs `noexec`, so a server unpacked there cannot be executed and **Reopen in
+Container** fails with `Permission denied`. Keeping it on the host also means
+the ~200MB server is not re-downloaded every time the container is recreated.
+The directory is created by `claude-container build --devcontainer`; delete it
+to force a clean server install.
 
 Some caveats worth knowing:
 

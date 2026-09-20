@@ -1,3 +1,5 @@
 services:
   claude:
     command: ["devcontainer-idle"]
+    volumes:
+      - {{VSCODE_SERVER_DIR}}:/home/claude/.vscode-server

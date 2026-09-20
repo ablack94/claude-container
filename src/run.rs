@@ -11,12 +11,8 @@ fn host_uid_gid() -> (u32, u32) {
     unsafe { (libc::getuid(), libc::getgid()) }
 }
 
-/// Collect the standard volume mounts as (host, container) pairs.
-fn collect_mounts(
-    forward_settings: bool,
-    forward_git_config: bool,
-    persist_state: bool,
-) -> Result<Vec<(String, String)>, String> {
+/// Resolve the host's HOME and the project directory being containerized.
+fn host_home_and_workdir() -> Result<(String, String), String> {
     let home =
         std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
     let cwd =
@@ -25,7 +21,17 @@ fn collect_mounts(
         .to_str()
         .ok_or("Current directory path is not valid UTF-8")?
         .to_string();
+    Ok((home, workdir))
+}
 
+/// Collect the standard volume mounts as (host, container) pairs.
+fn collect_mounts(
+    home: &str,
+    workdir: &str,
+    forward_settings: bool,
+    forward_git_config: bool,
+    persist_state: bool,
+) -> Result<Vec<(String, String)>, String> {
     let mut mounts = Vec::new();
 
     if forward_settings {
@@ -41,7 +47,7 @@ fn collect_mounts(
     }
 
     if persist_state {
-        mounts.extend(persist::persist_mounts(&home, &workdir, forward_settings)?);
+        mounts.extend(persist::persist_mounts(home, workdir, forward_settings)?);
     }
 
     if forward_git_config {
@@ -51,7 +57,7 @@ fn collect_mounts(
         }
     }
 
-    mounts.push((workdir, "/workarea".to_string()));
+    mounts.push((workdir.to_string(), "/workarea".to_string()));
     Ok(mounts)
 }
 
@@ -70,7 +76,14 @@ pub fn build(
     devcontainer_enabled: bool,
     vscode_extensions: &[String],
 ) -> Result<(), String> {
-    let mounts = collect_mounts(forward_settings, forward_git_config, persist_state)?;
+    let (home, workdir) = host_home_and_workdir()?;
+    let mounts = collect_mounts(
+        &home,
+        &workdir,
+        forward_settings,
+        forward_git_config,
+        persist_state,
+    )?;
     let (uid, gid) = host_uid_gid();
 
     // Persisted state is bind-mounted *inside* the /home/claude tmpfs. Give
@@ -136,7 +149,13 @@ pub fn build(
         // The project root is the current directory; an empty path keeps the
         // printed paths relative (".devcontainer/devcontainer.json").
         let project_dir = std::path::Path::new("");
-        devcontainer::write_devcontainer(project_dir, compose_dir, vscode_extensions)?;
+        devcontainer::write_devcontainer(
+            project_dir,
+            compose_dir,
+            vscode_extensions,
+            &home,
+            &workdir,
+        )?;
     }
 
     eprintln!("Built .claude-container/ project");

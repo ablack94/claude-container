@@ -1,11 +1,21 @@
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use crate::persist::project_slug;
 
 const DEVCONTAINER_JSON_TEMPLATE: &str = include_str!("templates/devcontainer.json");
 const DEVCONTAINER_COMPOSE_TEMPLATE: &str = include_str!("templates/compose-devcontainer.yaml");
 
 /// Extension installed into every generated dev container.
 const DEFAULT_EXTENSION: &str = "anthropic.claude-code";
+
+/// Where VS Code installs its server (and the extensions it manages) inside the
+/// container. HOME is a tmpfs, which Docker mounts `noexec`, so anything the
+/// server unpacks there is unrunnable; this path gets a host bind mount instead.
+const CONTAINER_VSCODE_SERVER_DIR: &str = "/home/claude/.vscode-server";
+
+/// Host cache root for VS Code server installs, relative to the host's HOME.
+const HOST_VSCODE_CACHE_DIR: &str = ".cache/claude-container/vscode-server";
 
 /// Name of the compose override written next to the generated `compose.yaml`.
 const COMPOSE_OVERRIDE_FILE: &str = "compose.devcontainer.yaml";
@@ -68,15 +78,40 @@ fn generate_devcontainer_json(compose_ref: &str, extensions: &[String]) -> Strin
         .replace("{{EXTENSIONS}}", &format_extensions(extensions))
 }
 
+/// Host directory caching the VS Code server for a given project directory.
+///
+/// Keyed by the host workdir using the same slug persist.rs uses, so each
+/// project gets its own server tree instead of sharing (and fighting over) one.
+pub fn host_vscode_server_dir(home: &str, workdir: &str) -> PathBuf {
+    PathBuf::from(home)
+        .join(HOST_VSCODE_CACHE_DIR)
+        .join(project_slug(workdir))
+}
+
+/// Create the host cache directory before the runtime sees it, so it is owned
+/// by the invoking user rather than created root-owned by the bind mount.
+fn ensure_dir(path: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(path).map_err(|e| format!("Failed to create {}: {e}", path.display()))
+}
+
+/// Render the compose override, pointing the VS Code server bind mount at the
+/// host cache directory for this project.
+fn generate_devcontainer_compose(vscode_server_dir: &str) -> String {
+    DEVCONTAINER_COMPOSE_TEMPLATE.replace("{{VSCODE_SERVER_DIR}}", vscode_server_dir)
+}
+
 /// Write the Dev Containers setup: a compose override that idles the claude
 /// service, plus the `devcontainer.json` VS Code discovers at the project root.
 ///
 /// `dir` is the project root; `compose_dir` is the generated `.claude-container`
-/// directory inside it.
+/// directory inside it. `home` and `workdir` are host paths, used to place the
+/// VS Code server cache.
 pub fn write_devcontainer(
     dir: &Path,
     compose_dir: &Path,
     extensions: &[String],
+    home: &str,
+    workdir: &str,
 ) -> Result<(), String> {
     // `.devcontainer/` and the compose directory are siblings under the project
     // root, so the paths VS Code resolves are `../<compose dir>/...`.
@@ -105,10 +140,20 @@ pub fn write_devcontainer(
         }
     }
 
+    // The container HOME is a noexec tmpfs, so the VS Code server has to live on
+    // a bind mount to be executable at all. Creating it here also keeps it
+    // across container recreation instead of re-downloading the server.
+    let server_dir = host_vscode_server_dir(home, workdir);
+    ensure_dir(&server_dir)?;
+    let server_dir_str = server_dir
+        .to_str()
+        .ok_or_else(|| format!("Path is not valid UTF-8: {}", server_dir.display()))?;
+    eprintln!("Mounting {server_dir_str} at {CONTAINER_VSCODE_SERVER_DIR}");
+
     let override_path = compose_dir.join(COMPOSE_OVERRIDE_FILE);
     let mut f = std::fs::File::create(&override_path)
         .map_err(|e| format!("Failed to write {COMPOSE_OVERRIDE_FILE}: {e}"))?;
-    f.write_all(DEVCONTAINER_COMPOSE_TEMPLATE.as_bytes())
+    f.write_all(generate_devcontainer_compose(server_dir_str).as_bytes())
         .map_err(|e| format!("Failed to write {COMPOSE_OVERRIDE_FILE}: {e}"))?;
     eprintln!("Wrote {}", override_path.display());
 
@@ -259,6 +304,56 @@ mod tests {
     }
 
     #[test]
+    fn test_compose_override_template_has_vscode_server_placeholder() {
+        assert!(DEVCONTAINER_COMPOSE_TEMPLATE.contains("{{VSCODE_SERVER_DIR}}"));
+        assert!(DEVCONTAINER_COMPOSE_TEMPLATE.contains(CONTAINER_VSCODE_SERVER_DIR));
+        assert!(DEVCONTAINER_COMPOSE_TEMPLATE.contains("volumes:"));
+    }
+
+    #[test]
+    fn test_compose_override_substitutes_the_vscode_server_dir() {
+        let yml = generate_devcontainer_compose("/home/me/.cache/claude-container/vscode-server/-p");
+        assert!(!yml.contains("{{VSCODE_SERVER_DIR}}"));
+        assert!(yml.contains(
+            "- /home/me/.cache/claude-container/vscode-server/-p:/home/claude/.vscode-server"
+        ));
+    }
+
+    #[test]
+    fn test_host_vscode_server_dir_is_keyed_by_project_slug() {
+        let dir = host_vscode_server_dir("/home/me", "/home/me/src/proj");
+        assert_eq!(
+            dir,
+            PathBuf::from("/home/me/.cache/claude-container/vscode-server/-home-me-src-proj")
+        );
+    }
+
+    #[test]
+    fn test_write_devcontainer_creates_and_mounts_the_server_cache() {
+        let tmp = std::env::temp_dir().join(format!("cc-vscode-cache-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let dir = tmp.join("proj");
+        let compose_dir = dir.join(".claude-container");
+        std::fs::create_dir_all(&compose_dir).unwrap();
+        let home = tmp.join("home");
+        let home_str = home.to_str().unwrap();
+
+        write_devcontainer(&dir, &compose_dir, &[], home_str, "/host/proj").unwrap();
+
+        let expected = home.join(".cache/claude-container/vscode-server/-host-proj");
+        assert!(expected.is_dir(), "host cache dir is created up front");
+
+        let yml = std::fs::read_to_string(compose_dir.join(COMPOSE_OVERRIDE_FILE)).unwrap();
+        assert!(!yml.contains("{{VSCODE_SERVER_DIR}}"));
+        // An absolute host path, bind-mounted over the noexec tmpfs HOME.
+        let mount = format!("- {}:{}", expected.display(), CONTAINER_VSCODE_SERVER_DIR);
+        assert!(yml.contains(&mount), "missing mount {mount} in:\n{yml}");
+        assert!(expected.is_absolute());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn test_entrypoint_has_idle_sentinel_branch() {
         assert!(ENTRYPOINT_SCRIPT.contains("\"$1\" = \"devcontainer-idle\""));
         assert!(ENTRYPOINT_SCRIPT.contains("while :; do sleep 3600; done"));
@@ -282,7 +377,10 @@ mod tests {
         let json_path = dir.join(".devcontainer").join("devcontainer.json");
         std::fs::write(&json_path, "{ \"name\": \"mine\" }\n").unwrap();
 
-        let err = write_devcontainer(&dir, &compose_dir, &[]).unwrap_err();
+        let home = dir.join("home");
+        let home_str = home.to_str().unwrap().to_string();
+
+        let err = write_devcontainer(&dir, &compose_dir, &[], &home_str, "/host/proj").unwrap_err();
         assert!(err.contains("refusing to overwrite"));
         // Untouched, and no override file written either.
         assert_eq!(
@@ -293,7 +391,7 @@ mod tests {
 
         // A file bearing our marker is replaced without complaint.
         std::fs::write(&json_path, format!("{GENERATED_MARKER} stale\n{{}}\n")).unwrap();
-        write_devcontainer(&dir, &compose_dir, &[]).unwrap();
+        write_devcontainer(&dir, &compose_dir, &[], &home_str, "/host/proj").unwrap();
         let written = std::fs::read_to_string(&json_path).unwrap();
         assert!(written.contains("\"service\": \"claude\""));
         assert!(compose_dir.join(COMPOSE_OVERRIDE_FILE).exists());
