@@ -52,15 +52,22 @@ fn format_env_file_volumes_command(
         Ok(a) => a,
         Err(e) => {
             eprintln!("Warning: {e}");
-            crate::auth::ResolvedAuth {
-                profile_env: None,
-                host_api_key: None,
-            }
+            // The profile is unusable, but host credentials are independent of
+            // it and are still forwarded.
+            crate::auth::ResolvedAuth::host_only()
         }
     };
 
-    if !auth.has_auth() {
-        eprintln!("Warning: No authentication configured. Set ANTHROPIC_API_KEY or create a profile with `claude-container auth create <name>`.");
+    if auth.has_auth() {
+        eprintln!("Auth: {}", auth.describe());
+    } else {
+        eprintln!(
+            "Warning: No authentication configured. Export {oauth} or {key} on the host, \
+             or create a profile with `claude-container auth create <name> oauth <token>` \
+             (get a long-lived token from `claude setup-token`).",
+            oauth = crate::auth::OAUTH_TOKEN_VAR,
+            key = crate::auth::API_KEY_VAR,
+        );
     }
 
     let mut env_files = Vec::new();
@@ -69,10 +76,13 @@ fn format_env_file_volumes_command(
         env_files.push(format!("      - {}", path.display()));
     }
 
-    // Write host API key to a separate env file so it can be referenced alongside the profile
-    if let Some(key) = &auth.host_api_key {
-        if let Ok(path) = crate::auth::write_host_api_key_env(key) {
-            env_files.push(format!("      - {}", path.display()));
+    // Host credentials go in a separate env file so they can be referenced
+    // alongside the profile. The profile is listed first, but only variables it
+    // leaves unset reach this file, so neither clobbers the other.
+    if !auth.host_env.is_empty() {
+        match crate::auth::write_host_env(&auth.host_env) {
+            Ok(path) => env_files.push(format!("      - {}", path.display())),
+            Err(e) => eprintln!("Warning: {e}"),
         }
     }
 

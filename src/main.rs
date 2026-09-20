@@ -332,7 +332,9 @@ fn main() {
                     Ok(profiles) => {
                         if profiles.is_empty() {
                             eprintln!("No auth profiles configured.");
-                            eprintln!("Create one with: claude-container auth create <name>");
+                            eprintln!(
+                                "Create one with: claude-container auth create <name> oauth <token>"
+                            );
                         } else {
                             let default = auth::default_profile();
                             for name in &profiles {

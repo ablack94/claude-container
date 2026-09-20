@@ -52,12 +52,52 @@ claude-container auth list
 claude-container auth remove old-profile
 ```
 
-If `ANTHROPIC_API_KEY` is set in the host environment, it is also passed through
-to the container regardless of which profile is active.
+Get a long-lived OAuth token with `claude setup-token` on the host, then hand it
+to `auth create`. The profile exports it into the container as
+`CLAUDE_CODE_OAUTH_TOKEN`.
 
-When no `--profile` is specified on `build`, the default profile is used. If no
-default is set and no `ANTHROPIC_API_KEY` is in the environment, a warning is
-printed.
+**Host environment passthrough:** `CLAUDE_CODE_OAUTH_TOKEN` and
+`ANTHROPIC_API_KEY` are forwarded from the host environment into the container.
+The active profile wins for any variable it defines, and host values fill in the
+rest — so `--profile work` always uses the work token even if your shell exports
+a different one. Host credentials are written to
+`~/.config/claude-container/host.env` (mode 0600) rather than inlined into
+`compose.yaml`.
+
+When no `--profile` is specified on `build`, the default profile is used. Each
+build prints the resolved sources, e.g. `Auth: profile 'work'`. If nothing is
+configured, a warning is printed.
+
+### Using the Claude Agent SDK inside the container
+
+Because auth arrives as environment variables, the
+[Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview) works with
+no extra configuration: it picks up `CLAUDE_CODE_OAUTH_TOKEN` (or
+`ANTHROPIC_API_KEY`) from the environment, and the `claude` binary is already on
+`PATH` at `/usr/local/bin/claude`.
+
+```sh
+# Any profile created with `auth create <name> oauth <token>` exports
+# CLAUDE_CODE_OAUTH_TOKEN, which is what the SDK reads.
+claude-container auth create work oauth "$(claude setup-token)" --default
+
+# Base image needs a runtime for the SDK package itself (node or python)
+claude-container build node:22 --run
+```
+
+Inside the container:
+
+```sh
+npm install @anthropic-ai/claude-agent-sdk
+node -e 'import("@anthropic-ai/claude-agent-sdk").then(async ({query}) => {
+  for await (const m of query({prompt: "say hi"})) console.log(m);
+})'
+```
+
+Note that the generated `Dockerfile` sets `ENTRYPOINT` to run `claude` itself,
+so a `command:` in the compose service is passed to `claude` as arguments
+rather than run as its own program. To reach a shell for the above, override
+`entrypoint:` for the service in `.claude-container/compose.yaml`.
 
 ### Build a project
 
