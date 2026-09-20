@@ -182,12 +182,28 @@ fn generate_isolated_compose(
     )
 }
 
-/// Write the Dockerfile and entrypoint script into the project directory.
-fn write_dockerfile(dir: &Path, base_image: &str, version: Option<&str>) -> Result<(), String> {
+/// Render the Dockerfile for a base image and the UID/GID the container runs as.
+///
+/// The UID/GID are baked in so the image can guarantee an `/etc/passwd` entry
+/// for the runtime user; see the template for why that matters.
+fn generate_dockerfile(base_image: &str, version: Option<&str>, uid: u32, gid: u32) -> String {
     let source_image = claude_source_image(version);
-    let content = DOCKERFILE_TEMPLATE
+    DOCKERFILE_TEMPLATE
         .replace("{{BASE_IMAGE}}", base_image)
-        .replace("{{CLAUDE_SOURCE_IMAGE}}", &source_image);
+        .replace("{{CLAUDE_SOURCE_IMAGE}}", &source_image)
+        .replace("{{UID}}", &uid.to_string())
+        .replace("{{GID}}", &gid.to_string())
+}
+
+/// Write the Dockerfile and entrypoint script into the project directory.
+fn write_dockerfile(
+    dir: &Path,
+    base_image: &str,
+    version: Option<&str>,
+    uid: u32,
+    gid: u32,
+) -> Result<(), String> {
+    let content = generate_dockerfile(base_image, version, uid, gid);
 
     let dockerfile_path = dir.join("Dockerfile");
     let mut f = std::fs::File::create(&dockerfile_path)
@@ -225,7 +241,7 @@ pub fn write_simple_project(
     gid: u32,
     version: Option<&str>,
 ) -> Result<std::path::PathBuf, String> {
-    write_dockerfile(dir, base_image, version)?;
+    write_dockerfile(dir, base_image, version, uid, gid)?;
 
     let compose_path = dir.join("compose.yaml");
     let content = generate_simple_compose(profile, mounts, extra_tmpfs, args, uid, gid);
@@ -250,7 +266,7 @@ pub fn write_isolated_project(
     gid: u32,
     version: Option<&str>,
 ) -> Result<std::path::PathBuf, String> {
-    write_dockerfile(dir, base_image, version)?;
+    write_dockerfile(dir, base_image, version, uid, gid)?;
 
     let mut hosts: Vec<&str> = vec![".anthropic.com", ".claude.com"];
     for h in extra_hosts {
@@ -268,13 +284,21 @@ pub fn write_isolated_project(
             .map_err(|e| format!("Failed to write squid.conf: {e}"))?;
     }
 
+    // Bind it by absolute path, like every other mount we emit: a relative one
+    // resolves against whatever directory the compose file is invoked from.
+    let squid_conf_abs = std::fs::canonicalize(&squid_conf_path)
+        .map_err(|e| format!("Failed to resolve {}: {e}", squid_conf_path.display()))?;
+    let squid_conf_ref = squid_conf_abs
+        .to_str()
+        .ok_or_else(|| format!("Path is not valid UTF-8: {}", squid_conf_abs.display()))?;
+
     // Write compose.yaml
     let compose_path = dir.join("compose.yaml");
     {
         let mut f = std::fs::File::create(&compose_path)
             .map_err(|e| format!("Failed to write compose.yaml: {e}"))?;
         f.write_all(
-            generate_isolated_compose(profile, "./squid.conf", mounts, extra_tmpfs, args, uid, gid)
+            generate_isolated_compose(profile, squid_conf_ref, mounts, extra_tmpfs, args, uid, gid)
                 .as_bytes(),
         )
         .map_err(|e| format!("Failed to write compose.yaml: {e}"))?;
@@ -297,6 +321,45 @@ mod tests {
     }
 
     #[test]
+    fn test_dockerfile_substitutes_every_placeholder() {
+        let df = generate_dockerfile("ubuntu:24.04", Some("nightly"), 1234, 5678);
+        assert!(df.starts_with("FROM ubuntu:24.04\n"));
+        assert!(df.contains("--from=ghcr.io/ablack94/docker-claude:nightly"));
+        assert!(!df.contains("{{"), "unsubstituted placeholder in:\n{df}");
+    }
+
+    #[test]
+    fn test_dockerfile_adds_a_passwd_entry_for_the_runtime_uid() {
+        // The Dev Containers extension runs `id -un`, which fails outright when
+        // the runtime UID is missing from /etc/passwd.
+        let df = generate_dockerfile("ubuntu:24.04", None, 1234, 5678);
+        assert!(df.contains("getent passwd 1234"));
+        assert!(df.contains("echo \"claude:x:1234:5678::/home/claude:/bin/sh\" >> /etc/passwd"));
+        assert!(df.contains("getent group 5678"));
+        assert!(df.contains("echo \"claude:x:5678:\" >> /etc/group"));
+        // `getent` is missing from some minimal images; a grep fallback covers it.
+        assert!(df.contains("command -v getent"));
+        assert!(df.contains("grep -q \"^[^:]*:[^:]*:1234:\" /etc/passwd"));
+        assert!(df.contains("grep -q \"^[^:]*:[^:]*:5678:\" /etc/group"));
+        // The entries must exist before anything runs as that user.
+        let passwd = df.find("/etc/passwd").expect("passwd line");
+        assert!(passwd < df.find("ENTRYPOINT").expect("entrypoint line"));
+    }
+
+    #[test]
+    fn test_workspace_is_mounted_relative_to_the_compose_file() {
+        // `..` resolves against .claude-container/, i.e. the project directory,
+        // so the mount survives a clone or a moved checkout.
+        let workspace = [("..".to_string(), "/workarea".to_string())];
+        for yml in [
+            generate_simple_compose(None, &workspace, &[], &[], 1000, 1000),
+            generate_isolated_compose(None, "/abs/squid.conf", &workspace, &[], &[], 1000, 1000),
+        ] {
+            assert!(yml.contains("      - ..:/workarea\n"), "in:\n{yml}");
+        }
+    }
+
+    #[test]
     fn test_isolated_compose_structure() {
         let yml = generate_isolated_compose(
             None,
@@ -313,6 +376,42 @@ mod tests {
         assert!(yml.contains("internal: true"));
         assert!(yml.contains("HTTPS_PROXY=http://gateway"));
         assert!(yml.contains("user: \"1000:1000\""));
+    }
+
+    #[test]
+    fn test_isolated_project_binds_squid_conf_by_absolute_path() {
+        let dir = std::env::temp_dir().join(format!("cc-squid-path-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let compose_path = write_isolated_project(
+            &dir,
+            "ubuntu:24.04",
+            None,
+            &[],
+            &[("..".into(), "/workarea".into())],
+            &[],
+            &[],
+            1000,
+            1000,
+            None,
+        )
+        .unwrap();
+
+        let yml = std::fs::read_to_string(&compose_path).unwrap();
+        // Relative bind sources resolve against the invoking directory, not the
+        // compose file's; every path we emit but the workspace is absolute.
+        assert!(!yml.contains("./squid.conf"), "in:\n{yml}");
+        let line = yml
+            .lines()
+            .find(|l| l.contains("/etc/squid/squid.conf:ro"))
+            .expect("squid bind mount");
+        let host_path = line.trim().trim_start_matches("- ");
+        assert!(host_path.starts_with('/'), "not absolute: {line}");
+        assert!(host_path.ends_with("squid.conf:/etc/squid/squid.conf:ro"));
+        assert!(std::path::Path::new(host_path.split(':').next().unwrap()).is_file());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -5,6 +5,19 @@ use crate::devcontainer;
 use crate::persist;
 use crate::runtime::Runtime;
 
+/// Where the project is mounted inside the container.
+const CONTAINER_WORKDIR: &str = "/workarea";
+
+/// Host side of the workspace mount, written relative to the generated compose
+/// file rather than as the absolute host path.
+///
+/// Compose resolves relative bind sources against the compose file's directory,
+/// which is always `<project>/.claude-container/`, so `..` is exactly the
+/// project directory. Both `claude-container run` and the Dev Containers
+/// extension read the same file, and the mount keeps working if the checkout is
+/// moved or cloned elsewhere.
+const WORKSPACE_MOUNT_SOURCE: &str = "..";
+
 /// Get the host user's UID and GID.
 fn host_uid_gid() -> (u32, u32) {
     // SAFETY: getuid/getgid are always safe to call
@@ -57,7 +70,12 @@ fn collect_mounts(
         }
     }
 
-    mounts.push((workdir.to_string(), "/workarea".to_string()));
+    // The workspace is the one mount written relative to the compose file; the
+    // rest are absolute host paths outside the project.
+    mounts.push((
+        WORKSPACE_MOUNT_SOURCE.to_string(),
+        CONTAINER_WORKDIR.to_string(),
+    ));
     Ok(mounts)
 }
 
@@ -139,6 +157,11 @@ pub fn build(
     };
 
     if devcontainer_enabled {
+        if isolated {
+            if let Some(warning) = devcontainer::isolated_host_warning(allow_hosts) {
+                eprintln!("{warning}");
+            }
+        }
         if !args.is_empty() {
             eprintln!(
                 "Warning: trailing arguments apply to `claude-container run` only — \
@@ -219,4 +242,18 @@ pub fn run(runtime: Runtime, rebuild: bool) -> Result<(), String> {
         );
     }
     run_compose(runtime, compose_file, rebuild)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workspace_is_mounted_relative_to_the_compose_file() {
+        let mounts = collect_mounts("/home/me", "/home/me/src/proj", false, false, false).unwrap();
+        // Relative to .claude-container/, `..` is the project directory — and it
+        // stays correct if the checkout is cloned or moved.
+        assert_eq!(mounts, vec![("..".to_string(), "/workarea".to_string())]);
+        assert!(!mounts[0].0.contains("/home/me"));
+    }
 }
