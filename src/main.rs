@@ -1,5 +1,6 @@
 mod auth;
 mod compose;
+mod devcontainer;
 mod persist;
 mod run;
 mod runtime;
@@ -64,6 +65,15 @@ enum Commands {
         /// Claude version tag to use (e.g. stable, nightly). Overrides global config.
         #[arg(long)]
         version: Option<String>,
+
+        /// Also generate a VS Code Dev Containers setup (.devcontainer/devcontainer.json)
+        #[arg(long)]
+        devcontainer: bool,
+
+        /// VS Code extension to install in the dev container (implies --devcontainer).
+        /// anthropic.claude-code is always installed.
+        #[arg(long = "vscode-extension", num_args = 1)]
+        vscode_extensions: Vec<String>,
 
         /// Additional arguments passed to Claude inside the container
         #[arg(last = true)]
@@ -385,13 +395,41 @@ fn main() {
 
         Commands::Clean => {
             let dir = std::path::Path::new(".claude-container");
+            let mut cleaned = false;
             if dir.exists() {
                 if let Err(e) = std::fs::remove_dir_all(dir) {
                     eprintln!("Error: Failed to remove .claude-container/: {e}");
                     std::process::exit(1);
                 }
                 eprintln!("Removed .claude-container/");
-            } else {
+                cleaned = true;
+            }
+
+            // Remove our generated devcontainer.json, but leave any other files
+            // the user keeps in .devcontainer/ alone. Only files carrying our
+            // marker comment are ours to delete; anything unreadable (missing,
+            // a directory, permissions) is left in place.
+            let devcontainer_dir = std::path::Path::new(".devcontainer");
+            let devcontainer_json = devcontainer_dir.join("devcontainer.json");
+            let is_ours = std::fs::read_to_string(&devcontainer_json)
+                .is_ok_and(|s| s.contains(devcontainer::GENERATED_MARKER));
+            if is_ours {
+                if let Err(e) = std::fs::remove_file(&devcontainer_json) {
+                    eprintln!("Error: Failed to remove .devcontainer/devcontainer.json: {e}");
+                    std::process::exit(1);
+                }
+                eprintln!("Removed .devcontainer/devcontainer.json");
+                cleaned = true;
+
+                // Only drop the directory if nothing else lives there.
+                if let Ok(mut entries) = std::fs::read_dir(devcontainer_dir) {
+                    if entries.next().is_none() {
+                        let _ = std::fs::remove_dir(devcontainer_dir);
+                    }
+                }
+            }
+
+            if !cleaned {
                 eprintln!("Nothing to clean — .claude-container/ does not exist.");
             }
             return;
@@ -418,10 +456,13 @@ fn main() {
             persist,
             no_persist,
             version,
+            devcontainer: devcontainer_flag,
+            vscode_extensions,
             args,
             run: should_run,
         } => {
             let use_isolation = isolated || !allow_hosts.is_empty();
+            let use_devcontainer = devcontainer_flag || !vscode_extensions.is_empty();
             let config = runtime::RuntimeConfig::load();
             // Resolve version: CLI flag > global config > default
             let resolved_version = version.or(config.version);
@@ -437,6 +478,8 @@ fn main() {
                 persist_state,
                 &args,
                 resolved_version.as_deref(),
+                use_devcontainer,
+                &vscode_extensions,
             )
             .and_then(|_| {
                 if should_run {
