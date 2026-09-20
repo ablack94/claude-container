@@ -5,18 +5,27 @@ use crate::devcontainer;
 use crate::persist;
 use crate::runtime::Runtime;
 
+/// Where the project is mounted inside the container.
+const CONTAINER_WORKDIR: &str = "/workarea";
+
+/// Host side of the workspace mount, written relative to the generated compose
+/// file rather than as the absolute host path.
+///
+/// Compose resolves relative bind sources against the compose file's directory,
+/// which is always `<project>/.claude-container/`, so `..` is exactly the
+/// project directory. Both `claude-container run` and the Dev Containers
+/// extension read the same file, and the mount keeps working if the checkout is
+/// moved or cloned elsewhere.
+const WORKSPACE_MOUNT_SOURCE: &str = "..";
+
 /// Get the host user's UID and GID.
 fn host_uid_gid() -> (u32, u32) {
     // SAFETY: getuid/getgid are always safe to call
     unsafe { (libc::getuid(), libc::getgid()) }
 }
 
-/// Collect the standard volume mounts as (host, container) pairs.
-fn collect_mounts(
-    forward_settings: bool,
-    forward_git_config: bool,
-    persist_state: bool,
-) -> Result<Vec<(String, String)>, String> {
+/// Resolve the host's HOME and the project directory being containerized.
+fn host_home_and_workdir() -> Result<(String, String), String> {
     let home =
         std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
     let cwd =
@@ -25,7 +34,17 @@ fn collect_mounts(
         .to_str()
         .ok_or("Current directory path is not valid UTF-8")?
         .to_string();
+    Ok((home, workdir))
+}
 
+/// Collect the standard volume mounts as (host, container) pairs.
+fn collect_mounts(
+    home: &str,
+    workdir: &str,
+    forward_settings: bool,
+    forward_git_config: bool,
+    persist_state: bool,
+) -> Result<Vec<(String, String)>, String> {
     let mut mounts = Vec::new();
 
     if forward_settings {
@@ -41,7 +60,7 @@ fn collect_mounts(
     }
 
     if persist_state {
-        mounts.extend(persist::persist_mounts(&home, &workdir, forward_settings)?);
+        mounts.extend(persist::persist_mounts(home, workdir, forward_settings)?);
     }
 
     if forward_git_config {
@@ -51,7 +70,12 @@ fn collect_mounts(
         }
     }
 
-    mounts.push((workdir, "/workarea".to_string()));
+    // The workspace is the one mount written relative to the compose file; the
+    // rest are absolute host paths outside the project.
+    mounts.push((
+        WORKSPACE_MOUNT_SOURCE.to_string(),
+        CONTAINER_WORKDIR.to_string(),
+    ));
     Ok(mounts)
 }
 
@@ -70,7 +94,14 @@ pub fn build(
     devcontainer_enabled: bool,
     vscode_extensions: &[String],
 ) -> Result<(), String> {
-    let mounts = collect_mounts(forward_settings, forward_git_config, persist_state)?;
+    let (home, workdir) = host_home_and_workdir()?;
+    let mounts = collect_mounts(
+        &home,
+        &workdir,
+        forward_settings,
+        forward_git_config,
+        persist_state,
+    )?;
     let (uid, gid) = host_uid_gid();
 
     // Persisted state is bind-mounted *inside* the /home/claude tmpfs. Give
@@ -126,6 +157,11 @@ pub fn build(
     };
 
     if devcontainer_enabled {
+        if isolated {
+            if let Some(warning) = devcontainer::isolated_host_warning(allow_hosts) {
+                eprintln!("{warning}");
+            }
+        }
         if !args.is_empty() {
             eprintln!(
                 "Warning: trailing arguments apply to `claude-container run` only — \
@@ -136,7 +172,13 @@ pub fn build(
         // The project root is the current directory; an empty path keeps the
         // printed paths relative (".devcontainer/devcontainer.json").
         let project_dir = std::path::Path::new("");
-        devcontainer::write_devcontainer(project_dir, compose_dir, vscode_extensions)?;
+        devcontainer::write_devcontainer(
+            project_dir,
+            compose_dir,
+            vscode_extensions,
+            &home,
+            &workdir,
+        )?;
     }
 
     eprintln!("Built .claude-container/ project");
@@ -200,4 +242,18 @@ pub fn run(runtime: Runtime, rebuild: bool) -> Result<(), String> {
         );
     }
     run_compose(runtime, compose_file, rebuild)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workspace_is_mounted_relative_to_the_compose_file() {
+        let mounts = collect_mounts("/home/me", "/home/me/src/proj", false, false, false).unwrap();
+        // Relative to .claude-container/, `..` is the project directory — and it
+        // stays correct if the checkout is cloned or moved.
+        assert_eq!(mounts, vec![("..".to_string(), "/workarea".to_string())]);
+        assert!(!mounts[0].0.contains("/home/me"));
+    }
 }

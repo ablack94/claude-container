@@ -8,6 +8,9 @@
   "service": "claude",
   "workspaceFolder": "/workarea",
   "overrideCommand": false,
+  // The image already carries a passwd entry for the host UID (see the
+  // generated Dockerfile); let the extension leave the container user alone.
+  "updateRemoteUserUID": false,
   "customizations": {
     "vscode": {
       "extensions": [

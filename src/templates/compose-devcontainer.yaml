@@ -1,3 +1,15 @@
+# A project name distinct from the one `claude-container run` uses.
+#
+# Compose derives the project name from the compose file's directory, so both
+# this stack and `claude-container run` would otherwise be `claude-container`:
+# `run`'s teardown on exit would stop a live dev container, and its leftover
+# one-off containers would be mistaken for the dev container. The Dev Containers
+# extension honours the merged config's top-level `name:`, and a later `-f` file
+# wins, so this override renames the dev container stack only.
+name: claude-container-dev
+
 services:
   claude:
     command: ["devcontainer-idle"]
+    volumes:
+      - {{VSCODE_SERVER_DIR}}:/home/claude/.vscode-server

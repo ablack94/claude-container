@@ -157,7 +157,7 @@ Two files are written:
 | File | Purpose |
 |------|---------|
 | `.devcontainer/devcontainer.json` | What VS Code reads — points at both compose files |
-| `.claude-container/compose.devcontainer.yaml` | Compose override that keeps the container idling |
+| `.claude-container/compose.devcontainer.yaml` | Compose override that keeps the container idling, mounts the VS Code server cache, and names the stack `claude-container-dev` |
 
 Then run **Dev Containers: Reopen in Container** from the VS Code command
 palette. The project is opened at `/workarea`, the same path the normal
@@ -178,11 +178,26 @@ entrypoint, so `claude-container run` effectively runs
 `claude --dangerously-skip-permissions`. Pass the flag yourself in the VS Code
 terminal to match that behaviour, or drop it if you would rather be prompted.
 
+The dev container runs as its own compose project, `claude-container-dev`.
+Both stacks would otherwise be named after the compose directory, and
+`claude-container run` tears its project down when it exits — which would stop
+a dev container you are working in.
+
 The `anthropic.claude-code` extension is installed in the container by default;
 any `--vscode-extension` IDs are added to it. Credentials and environment come
 from exactly the same `env_file` mechanism as the regular compose flow, so the
 auth profile selected with `--profile` (or the default profile, or
 `ANTHROPIC_API_KEY`) is available inside the dev container.
+
+The VS Code server and the extensions it installs are cached on the host under
+`~/.cache/claude-container/vscode-server/<project>/`, which the override
+bind-mounts at `/home/claude/.vscode-server`. This is required, not just an
+optimization: the container's home directory is a tmpfs, and Docker mounts
+tmpfs `noexec`, so a server unpacked there cannot be executed and **Reopen in
+Container** fails with `Permission denied`. Keeping it on the host also means
+the ~200MB server is not re-downloaded every time the container is recreated.
+The directory is created by `claude-container build --devcontainer`; delete it
+to force a clean server install.
 
 Some caveats worth knowing:
 
@@ -191,10 +206,26 @@ Some caveats worth knowing:
   `.devcontainer/devcontainer.json`, every fresh clone still has to run
   `claude-container build <image> --devcontainer` once before **Reopen in
   Container** will work.
-- **`--isolated` blocks the extension marketplace.** The egress proxy only
-  allows Anthropic hosts, so VS Code's attempts to install extensions in the
-  container will fail unless you add `--allow-host` entries for the marketplace
-  domains.
+- **`--isolated` blocks VS Code itself.** The egress proxy only allows Anthropic
+  hosts, so the container can reach neither the VS Code server download nor the
+  extension marketplace: **Reopen in Container** fails outright rather than
+  merely skipping extensions. Building with both flags prints the list below as
+  a warning; nothing is allowed implicitly, so pass the hosts you are willing to
+  open:
+
+  ```sh
+  claude-container build ubuntu:24.04 --devcontainer --isolated \
+      --allow-host update.code.visualstudio.com \
+      --allow-host vscode.download.prss.microsoft.com \
+      --allow-host marketplace.visualstudio.com \
+      --allow-host .gallerycdn.vsassets.io \
+      --allow-host .vo.msecnd.net
+  ```
+
+  The first two serve the server tarball, the rest the marketplace and its
+  CDNs. A leading dot matches any subdomain. Once the server is cached under
+  `~/.cache/claude-container/vscode-server/`, later sessions no longer need the
+  download hosts.
 - **Podman needs pointing at.** The Dev Containers extension drives `docker` by
   default; podman users must tell VS Code otherwise (e.g. the
   `dev.containers.dockerPath` setting).
@@ -321,7 +352,7 @@ claude-container -C /path/to/project run
 
 | Host | Container | When |
 |------|-----------|------|
-| `$(pwd)` | `/workarea` (working dir) | Always |
+| `..` — the project directory, relative to the compose file | `/workarea` (working dir) | Always |
 | `~/.claude` | `/home/claude/.claude` | `--forward-settings` |
 | `~/.claude.json` | `/home/claude/.claude.json` | `--forward-settings` |
 | `~/.gitconfig` | `/home/claude/.gitconfig` (ro) | `--forward-git-config` |
